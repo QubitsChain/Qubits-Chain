@@ -13,13 +13,7 @@ pub fn print(address: &Address, page: &AccountTransactionsResponse) {
         println!("no transactions");
     }
     for t in &page.transactions {
-        println!(
-            "block {}  {}  {}  {}",
-            t.block_height.unwrap_or_default(),
-            t.block_timestamp_ms.map(utc).unwrap_or_default(),
-            t.id,
-            describe(address, t)
-        );
+        println!("{}", line(address, t));
     }
     if page.blocks_from > 1 {
         println!(
@@ -30,6 +24,16 @@ pub fn print(address: &Address, page: &AccountTransactionsResponse) {
     if let Some(next) = &page.next {
         println!("older: qubits account history {address} --before {next}");
     }
+}
+
+pub fn line(address: &Address, t: &TransactionResponse) -> String {
+    format!(
+        "block {}  {}  {}  {}",
+        t.block_height.unwrap_or_default(),
+        t.block_timestamp_ms.map(utc).unwrap_or_default(),
+        t.id,
+        describe(address, t)
+    )
 }
 
 /// One transaction as the address sees it. Amounts are in base units, as everywhere in the CLI.

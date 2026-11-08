@@ -374,6 +374,60 @@ fn an_accounts_history_reads_newest_first() {
 }
 
 #[test]
+fn an_address_is_watched_as_transactions_land() {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+
+    let (env, alice) = setup();
+    let bob = env.new_key("bob", "ml-dsa-65");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_qubits"))
+        .current_dir(env.dir.path())
+        .env("QUBITS_RPC", &env.rpc)
+        .args(["account", "watch", &bob])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut said = String::new();
+    BufReader::new(child.stderr.take().unwrap())
+        .read_line(&mut said)
+        .unwrap();
+    assert!(said.starts_with(&format!("watching {bob}")), "{said}");
+
+    let (lines, landed) = std::sync::mpsc::channel();
+    let stdout = child.stdout.take().unwrap();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            if lines.send(line.unwrap()).is_err() {
+                return;
+            }
+        }
+    });
+    let out = env.ok(&[
+        "transfer",
+        "--key",
+        "alice.json",
+        "--to",
+        &bob,
+        "--amount",
+        "4321",
+        "--password-file",
+        "pw",
+        "--wait",
+    ]);
+    let id = out.split_whitespace().nth(1).unwrap().to_owned();
+    let line = landed.recv_timeout(Duration::from_secs(20));
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let line = line.expect("no line within 20 s");
+    assert!(line.contains(&id), "{line}");
+    assert!(
+        line.contains(&format!("received 4321 from {alice}")),
+        "{line}"
+    );
+}
+
+#[test]
 fn chain_errors_are_reported() {
     let (env, alice) = setup();
     let carol = env.new_key("carol", "ml-dsa-65");

@@ -30,6 +30,10 @@ impl Client {
         }
     }
 
+    pub fn base(&self) -> &str {
+        &self.base
+    }
+
     fn read<T: DeserializeOwned>(&self, mut resp: ureq::http::Response<ureq::Body>) -> Result<T> {
         let status = resp.status();
         let body = resp

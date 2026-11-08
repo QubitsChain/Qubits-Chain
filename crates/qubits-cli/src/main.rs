@@ -3,6 +3,7 @@
 mod chain;
 mod contract;
 mod history;
+mod watch;
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
@@ -126,6 +127,14 @@ enum AccountCommand {
         #[arg(long)]
         before: Option<String>,
         /// Print the node's answer as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print each new transaction that names an address as it lands, until stopped.
+    Watch {
+        /// Address (`qb1…`).
+        address: Address,
+        /// One JSON object a line instead.
         #[arg(long)]
         json: bool,
     },
@@ -681,6 +690,26 @@ fn run(cli: Cli) -> Result<()> {
             } else {
                 history::print(&address, &page);
             }
+        }
+        Command::Account {
+            command: Some(AccountCommand::Watch { address, json }),
+            ..
+        } => {
+            let base = client.base().to_owned();
+            watch::watch(
+                &base,
+                &address,
+                || eprintln!("watching {address} on {base}; Ctrl-C to stop"),
+                |t| {
+                    if json {
+                        println!("{}", serde_json::to_string(&t)?);
+                    } else {
+                        println!("{}", history::line(&address, &t));
+                    }
+                    io::stdout().flush()?;
+                    Ok(())
+                },
+            )?;
         }
         Command::Account {
             address: Some(address),
