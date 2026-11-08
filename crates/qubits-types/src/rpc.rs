@@ -164,6 +164,8 @@ pub enum WsRequest {
     UnsubscribeBlocks,
     WatchTransaction { id: Hash },
     UnwatchTransaction { id: Hash },
+    WatchAddress { address: Address },
+    UnwatchAddress { address: Address },
 }
 
 /// What `/v1/ws` sends. `Transaction` is always an included one.
@@ -172,7 +174,15 @@ pub enum WsRequest {
 pub enum WsEvent {
     Block(Box<BlockSummary>),
     Transaction(Box<TransactionResponse>),
-    Error { error: String },
+    /// A transaction in a new block that names a watched address, as
+    /// `/v1/accounts/{address}/transactions` would list it.
+    AddressTransaction {
+        address: Address,
+        transaction: Box<TransactionResponse>,
+    },
+    Error {
+        error: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

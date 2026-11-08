@@ -822,6 +822,75 @@ fn ws_settle(socket: &mut Socket) {
     assert!(matches!(ws_read(socket), WsEvent::Error { .. }));
 }
 
+fn named(socket: &mut Socket) -> (Address, Hash, TransactionResponse) {
+    match ws_read(socket) {
+        WsEvent::AddressTransaction {
+            address,
+            transaction,
+        } => (address, transaction.id, *transaction),
+        other => panic!("expected a transaction naming the address: {other:?}"),
+    }
+}
+
+#[test]
+fn websocket_tells_a_watched_address_of_its_transactions() {
+    let server = start_server();
+    let mut socket = ws_connect(&server).unwrap();
+    let (bob_key, carol) = (key(2), addr(&key(3)));
+    let bob = addr(&bob_key);
+    ws_send(&mut socket, &WsRequest::WatchAddress { address: bob });
+    ws_settle(&mut socket);
+
+    let paid = tx(&alice(), 0, true, pay(bob, 1_000_000));
+    assert_eq!(post_tx(&server, &paid).0, 202);
+    let (address, id, pushed) = named(&mut socket);
+    assert_eq!((address, id), (bob, paid.id()));
+    let path = format!("/v1/transactions/{}", paid.id());
+    assert_eq!(
+        pushed,
+        get::<TransactionResponse>(&server, &path).1.unwrap()
+    );
+
+    // a transaction that doesn't name bob says nothing, so the next event is the one he sends
+    let other = tx(&alice(), 1, false, pay(carol, 5));
+    assert_eq!(post_tx(&server, &other).0, 202);
+    included(&server, &other);
+    let sent = tx(&bob_key, 0, true, pay(carol, 7));
+    assert_eq!(post_tx(&server, &sent).0, 202);
+    assert_eq!(named(&mut socket).1, sent.id());
+
+    // unwatched, bob hears nothing more: the next event is carol's, from a later block
+    ws_send(&mut socket, &WsRequest::UnwatchAddress { address: bob });
+    ws_send(&mut socket, &WsRequest::WatchAddress { address: carol });
+    ws_settle(&mut socket);
+    let to_bob = tx(&alice(), 2, false, pay(bob, 1));
+    assert_eq!(post_tx(&server, &to_bob).0, 202);
+    included(&server, &to_bob);
+    let to_carol = tx(&alice(), 3, false, pay(carol, 1));
+    assert_eq!(post_tx(&server, &to_carol).0, 202);
+    let (address, id, _) = named(&mut socket);
+    assert_eq!((address, id), (carol, to_carol.id()));
+
+    for i in 0..15u8 {
+        ws_send(
+            &mut socket,
+            &WsRequest::WatchAddress {
+                address: Address([i; 32]),
+            },
+        );
+    }
+    ws_send(
+        &mut socket,
+        &WsRequest::WatchAddress {
+            address: Address([200; 32]),
+        },
+    );
+    match ws_read(&mut socket) {
+        WsEvent::Error { error } => assert_eq!(error, "watching too many addresses"),
+        other => panic!("expected the limit: {other:?}"),
+    }
+}
+
 #[test]
 fn websocket_pushes_blocks_and_what_became_of_a_transaction() {
     let server = start_server();

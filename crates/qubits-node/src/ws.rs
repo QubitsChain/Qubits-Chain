@@ -1,4 +1,5 @@
-//! `/v1/ws`: blocks and transaction results pushed as they are committed.
+//! `/v1/ws`: blocks, transaction results and transactions naming an address, pushed as they are
+//! committed.
 //!
 //! Consensus only moves a number (`Feed::announce`), so nothing here can slow it down. One task
 //! turns new heights into messages, once each, and every connection shares them. Slow clients
@@ -16,7 +17,7 @@ use axum::extract::ws::{CloseFrame, Message, Utf8Bytes, WebSocket, WebSocketUpgr
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use qubits_types::rpc::{BlockSummary, ErrorResponse, WsEvent, WsRequest};
-use qubits_types::{Hash, SignedTransaction};
+use qubits_types::{Address, Hash, SignedTransaction};
 use tokio::sync::{broadcast, watch};
 use tokio::time::{Instant, timeout};
 
@@ -26,6 +27,8 @@ use crate::{ChainBlock, Node, rpc};
 pub const MAX_CONNECTIONS: usize = 1024;
 /// Transactions one connection may wait for.
 pub const MAX_WATCHED: usize = 64;
+/// Addresses one connection may watch.
+pub const MAX_WATCHED_ADDRESSES: usize = 16;
 /// Blocks kept for a connection. One that falls further behind is closed.
 pub const MAX_BEHIND: usize = 64;
 const MAX_REQUEST_BYTES: usize = 1024;
@@ -36,8 +39,11 @@ const PING_EVERY: Duration = Duration::from_secs(30);
 const CLOSE_BEHIND: u16 = 1013;
 
 struct Published {
+    height: u64,
     text: Utf8Bytes,
     transactions: Vec<Hash>,
+    /// What each transaction is listed under, as in the address index.
+    named: Vec<Vec<Address>>,
 }
 
 pub struct Feed {
@@ -103,7 +109,12 @@ fn error(text: impl Into<String>) -> Message {
     message(&WsEvent::Error { error: text.into() })
 }
 
-fn published(block: ChainBlock) -> Published {
+fn published(node: &Node, block: ChainBlock) -> Published {
+    let named = crate::index::of_block(node.store(), &block).unwrap_or_else(|e| {
+        tracing::error!(height = block.height, error = %e, "receipts missing from the feed");
+        crate::index::of_payload(&block)
+    });
+    let height = block.height;
     let transactions: Vec<Hash> = block
         .payload
         .transactions
@@ -124,10 +135,12 @@ fn published(block: ChainBlock) -> Published {
         transaction_ids: transactions.clone(),
     }));
     Published {
+        height,
         text: serde_json::to_string(&event)
             .expect("encoding cannot fail")
             .into(),
         transactions,
+        named,
     }
 }
 
@@ -154,7 +167,7 @@ pub(crate) async fn publish(node: Arc<Node>) {
             for height in first..=head {
                 match node.block(height) {
                     Ok(Some(block)) => {
-                        let _ = feed.blocks.send(Arc::new(published(block)));
+                        let _ = feed.blocks.send(Arc::new(published(&node, block)));
                     }
                     Ok(None) => {}
                     Err(e) => tracing::error!(height, error = %e, "block missing from the feed"),
@@ -183,6 +196,7 @@ pub async fn upgrade(State(node): State<Arc<Node>>, upgrade: WebSocketUpgrade) -
 struct Client {
     blocks: bool,
     watched: HashSet<Hash>,
+    addresses: HashSet<Address>,
 }
 
 impl Client {
@@ -196,7 +210,41 @@ impl Client {
                 out.extend(self.included(node, *id));
             }
         }
+        let matched: Vec<(Address, u32)> = block
+            .named
+            .iter()
+            .enumerate()
+            .flat_map(|(index, named)| {
+                named
+                    .iter()
+                    .filter(|a| self.addresses.contains(a))
+                    .map(move |a| (*a, index as u32))
+            })
+            .collect();
+        if !matched.is_empty() {
+            out.extend(self.named(node, block.height, &matched));
+        }
         out
+    }
+
+    /// The block is read once, however many of its transactions name a watched address.
+    fn named(&self, node: &Node, height: u64, matched: &[(Address, u32)]) -> Vec<Message> {
+        let Ok(Some(block)) = node.block(height) else {
+            return vec![error("could not read the block")];
+        };
+        matched
+            .iter()
+            .filter_map(
+                |(address, index)| match rpc::response_at(node, &block, *index) {
+                    Ok(Some(transaction)) => Some(message(&WsEvent::AddressTransaction {
+                        address: *address,
+                        transaction: Box::new(transaction),
+                    })),
+                    Ok(None) => None,
+                    Err(_) => Some(error("could not read the transaction")),
+                },
+            )
+            .collect()
     }
 
     /// Stops watching once it can say what became of the transaction.
@@ -221,6 +269,18 @@ impl Client {
             WsRequest::UnsubscribeBlocks => self.blocks = false,
             WsRequest::UnwatchTransaction { id } => {
                 self.watched.remove(&id);
+            }
+            WsRequest::WatchAddress { address } => {
+                if self.addresses.len() >= MAX_WATCHED_ADDRESSES
+                    && !self.addresses.contains(&address)
+                {
+                    return vec![error("watching too many addresses")];
+                }
+                // only what comes next: the past is at /v1/accounts/{address}/transactions
+                self.addresses.insert(address);
+            }
+            WsRequest::UnwatchAddress { address } => {
+                self.addresses.remove(&address);
             }
             WsRequest::WatchTransaction { id } => {
                 if self.watched.len() >= MAX_WATCHED && !self.watched.contains(&id) {

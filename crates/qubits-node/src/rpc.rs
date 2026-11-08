@@ -217,19 +217,7 @@ async fn account_transactions(
         }
         last = Some(at);
         let Some(block) = &held else { continue };
-        let Some(transaction) = block.payload.transactions.get(at.index as usize) else {
-            continue;
-        };
-        let id = transaction.id();
-        transactions.push(TransactionResponse {
-            id,
-            status: TxStatus::Included,
-            block_height: Some(at.height),
-            block_timestamp_ms: Some(block.payload.timestamp_ms),
-            index: Some(at.index),
-            transaction: transaction.clone(),
-            receipt: receipt(&node, &id)?,
-        });
+        transactions.extend(response_at(&node, block, at.index)?);
     }
     Ok(Json(AccountTransactionsResponse {
         address,
@@ -587,20 +575,29 @@ pub(crate) fn included(node: &Node, id: &Hash) -> Result<Option<TransactionRespo
     let block = node
         .block(location.height)?
         .ok_or_else(|| NodeError::Storage(format!("block {} missing", location.height)))?;
-    let transaction = block
-        .payload
-        .transactions
-        .get(location.index as usize)
-        .cloned()
+    let response = response_at(node, &block, location.index)?
         .ok_or_else(|| NodeError::Storage("transaction index out of range".into()))?;
+    Ok(Some(response))
+}
+
+/// What `/v1/transactions/{id}` says of the transaction at `index` of a stored block.
+pub(crate) fn response_at(
+    node: &Node,
+    block: &ChainBlock,
+    index: u32,
+) -> Result<Option<TransactionResponse>, ApiError> {
+    let Some(transaction) = block.payload.transactions.get(index as usize) else {
+        return Ok(None);
+    };
+    let id = transaction.id();
     Ok(Some(TransactionResponse {
-        id: *id,
+        id,
         status: TxStatus::Included,
-        block_height: Some(location.height),
+        block_height: Some(block.height),
         block_timestamp_ms: Some(block.payload.timestamp_ms),
-        index: Some(location.index),
-        transaction,
-        receipt: receipt(node, id)?,
+        index: Some(index),
+        transaction: transaction.clone(),
+        receipt: receipt(node, &id)?,
     }))
 }
 
