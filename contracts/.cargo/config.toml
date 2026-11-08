@@ -1,0 +1,6 @@
+[build]
+target = "wasm32-unknown-unknown"
+
+# a run pays for its memory by the page, and Rust's default stack is 1 MiB
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "link-arg=-zstack-size=32768"]

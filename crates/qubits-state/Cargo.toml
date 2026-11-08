@@ -1,0 +1,27 @@
+[package]
+name = "qubits-state"
+description = "Authenticated state storage for Qubits: Jellyfish Merkle Tree on RocksDB"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[features]
+default = ["rocksdb"]
+rocksdb = ["dep:rocksdb", "dep:jmt", "dep:anyhow", "dep:qubits-types"]
+
+[dependencies]
+blake3 = "1.8"
+borsh = { version = "1", features = ["derive"] }
+
+anyhow = { version = "1", optional = true }
+jmt = { version = "0.12", optional = true, default-features = false, features = ["std"] }
+qubits-types = { path = "../qubits-types", optional = true }
+rocksdb = { version = "0.25", optional = true, default-features = false, features = ["lz4"] }
+
+[dev-dependencies]
+tempfile = "3"
+qubits-crypto = { path = "../qubits-crypto" }
+qubits-types = { path = "../qubits-types" }

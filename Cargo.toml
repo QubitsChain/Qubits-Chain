@@ -1,0 +1,19 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+exclude = ["contracts"]
+
+[workspace.package]
+version = "0.2.3"
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0"
+homepage = "https://qubits.sh"
+repository = "https://github.com/QubitsChain/Qubits-Chain"
+
+# slh-dsa is unusably slow unoptimized
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+overflow-checks = true

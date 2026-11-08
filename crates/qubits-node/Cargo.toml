@@ -1,0 +1,45 @@
+[package]
+name = "qubits-node"
+description = "Qubits node: mempool, block production and HTTP API"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "qubits-node"
+path = "src/main.rs"
+
+[dependencies]
+qubits-consensus = { path = "../qubits-consensus" }
+qubits-crypto = { path = "../qubits-crypto", features = ["keystore", "borsh"] }
+qubits-execution = { path = "../qubits-execution" }
+qubits-state = { path = "../qubits-state" }
+qubits-types = { path = "../qubits-types" }
+anyhow = "1"
+axum = { version = "0.8", features = ["ws"] }
+borsh = { version = "1", features = ["derive"] }
+clap = { version = "4", features = ["derive"] }
+hex = "0.4"
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "signal", "io-util", "sync"] }
+tokio-stream = "0.1"
+tower-http = { version = "0.6", features = ["cors", "timeout"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "logging"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs"] }
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "crypto"] }
+ureq = { version = "3", features = ["json"] }
+zeroize = "1"
+serde = "1"
+
+[dev-dependencies]
+tempfile = "3"
+tungstenite = "0.29"
+wat = "1"
+ureq = { version = "3", features = ["json"] }
+serde = "1"
+serde_json = "1"

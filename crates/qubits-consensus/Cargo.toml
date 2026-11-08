@@ -1,0 +1,16 @@
+[package]
+name = "qubits-consensus"
+description = "Qubits BFT consensus: Pipelined Moonshot with post-quantum signatures, as a deterministic state machine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[dependencies]
+qubits-crypto = { path = "../qubits-crypto", features = ["borsh"] }
+qubits-types = { path = "../qubits-types" }
+borsh = { version = "1", features = ["derive"] }
+reed-solomon-simd = "=3.1.0"
+tracing = "0.1"

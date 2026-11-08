@@ -1,0 +1,16 @@
+[package]
+name = "qubits-e2e"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+hex = "0.4"
+qubits-consensus = { path = "../qubits-consensus" }
+qubits-crypto = { path = "../qubits-crypto", features = ["keystore"] }
+qubits-node = { path = "../qubits-node" }
+qubits-types = { path = "../qubits-types" }
+rand_core = { version = "0.6", features = ["getrandom"] }
+tokio = { version = "1", features = ["rt-multi-thread"] }

@@ -1,0 +1,20 @@
+[package]
+name = "qubits-vm"
+description = "The sandbox Qubits contracts run in: WebAssembly with metered gas and nothing but its host calls"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[dependencies]
+qubits-crypto = { path = "../qubits-crypto" }
+qubits-types = { path = "../qubits-types" }
+# part of the on-chain format: gas used goes into receipts, so upgrade only on purpose.
+# portable-dispatch is a loop. The other dispatch hopes the compiler turns every instruction into
+# a tail call, and where it doesn't an endless wasm loop overflows the stack and kills the node.
+wasmi = { version = "=2.0.0", default-features = false, features = ["std", "validate", "portable-dispatch"] }
+
+[dev-dependencies]
+wat = "1"

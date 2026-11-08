@@ -1,0 +1,42 @@
+[package]
+name = "qubits-crypto"
+description = "Post-quantum signature schemes (ML-DSA, SLH-DSA) and key storage for Qubits"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+keystore = ["dep:argon2", "dep:chacha20poly1305", "dep:serde", "dep:serde_json", "dep:hex"]
+borsh = ["dep:borsh"]
+serde = ["dep:serde", "dep:hex"]
+
+[dependencies]
+# exact versions: what these accept decides which blocks are valid
+fips204 = { version = "=0.5.0", default-features = false, features = ["default-rng", "ml-dsa-65"] }
+fips205 = { version = "=0.5.0", default-features = false, features = ["default-rng", "slh-dsa-sha2-192s"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+zeroize = "1.8"
+
+argon2 = { version = "0.5", optional = true, default-features = false, features = ["alloc", "zeroize"] }
+chacha20poly1305 = { version = "0.10", optional = true }
+serde = { version = "1", optional = true, features = ["derive"] }
+serde_json = { version = "1", optional = true }
+hex = { version = "0.4", optional = true }
+borsh = { version = "1", optional = true }
+
+[dev-dependencies]
+hex = "0.4"
+serde_json = "1"
+borsh = "1"
+criterion = "0.8"
+
+[[bench]]
+name = "signatures"
+harness = false
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }

@@ -1,0 +1,10 @@
+[package]
+name = "qubits-contract-sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"

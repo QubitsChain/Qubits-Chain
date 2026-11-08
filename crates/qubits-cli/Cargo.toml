@@ -1,0 +1,31 @@
+[package]
+name = "qubits-cli"
+description = "Command-line wallet for Qubits"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "qubits"
+path = "src/main.rs"
+
+[dependencies]
+qubits-crypto = { path = "../qubits-crypto", features = ["keystore"] }
+qubits-types = { path = "../qubits-types" }
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+hex = "0.4"
+rpassword = "7"
+serde = "1"
+serde_json = "1"
+ureq = { version = "3", features = ["json"] }
+zeroize = "1.8"
+
+[dev-dependencies]
+qubits-node = { path = "../qubits-node" }
+tempfile = "3"
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "net"] }

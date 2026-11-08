@@ -1,0 +1,21 @@
+[package]
+name = "qubits-execution"
+description = "Transaction execution rules of the Qubits chain: transfers, vaults, recovery, contracts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[dependencies]
+qubits-state = { path = "../qubits-state", default-features = false }
+qubits-types = { path = "../qubits-types" }
+qubits-vm = { path = "../qubits-vm" }
+borsh = "1"
+
+[dev-dependencies]
+qubits-crypto = { path = "../qubits-crypto" }
+qubits-state = { path = "../qubits-state" }
+tempfile = "3"
+wat = "1"

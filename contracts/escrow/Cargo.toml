@@ -1,0 +1,13 @@
+[package]
+name = "qubits-contract-escrow"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+qubits-contract-sdk = { path = "../sdk" }
