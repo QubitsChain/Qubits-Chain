@@ -903,3 +903,24 @@ fn the_address_index_is_rebuilt_from_the_blocks_held() {
     );
     assert_eq!(store.address_index_version().unwrap(), None);
 }
+
+#[test]
+fn a_database_from_a_later_version_still_opens() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).unwrap();
+        init(&store);
+    }
+    {
+        let mut options = rocksdb::Options::default();
+        options.create_missing_column_families(true);
+        let mut names = rocksdb::DB::list_cf(&options, dir.path()).unwrap();
+        names.push("added_later".into());
+        let db = rocksdb::DB::open_cf(&options, dir.path(), &names).unwrap();
+        db.put_cf(db.cf_handle("added_later").unwrap(), b"k", b"v")
+            .unwrap();
+    }
+    let store = Store::open(dir.path()).unwrap();
+    assert_eq!(store.latest_height().unwrap(), Some(0));
+    assert_eq!(store.get(b"a").unwrap(), Some(b"1".to_vec()));
+}

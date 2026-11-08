@@ -5,8 +5,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use qubits_crypto::SecretKey;
 use qubits_types::client::build_transaction;
 use qubits_types::rpc::{
-    AccountResponse, ContractResponse, ErrorResponse, RewardResponse, RewardsResponse,
-    StatusResponse, SubmitRequest, SubmitResponse, TransactionResponse, TxStatus,
+    AccountResponse, AccountTransactionsResponse, ContractResponse, ErrorResponse, RewardResponse,
+    RewardsResponse, StatusResponse, SubmitRequest, SubmitResponse, TransactionResponse, TxStatus,
     ValidatorsResponse, ViewRequest,
 };
 use qubits_types::{Address, Hash, Payload, Receipt, Role, SignedTransaction};
@@ -62,6 +62,28 @@ impl Client {
 
     pub fn account(&self, address: &Address) -> Result<AccountResponse> {
         self.get(&format!("/v1/accounts/{address}"))
+    }
+
+    pub fn history(
+        &self,
+        address: &Address,
+        limit: usize,
+        before: Option<&str>,
+    ) -> Result<AccountTransactionsResponse> {
+        let mut path = format!("/v1/accounts/{address}/transactions?limit={limit}");
+        if let Some(before) = before {
+            path.push_str(&format!("&before={before}"));
+        }
+        self.get(&path).map_err(|e| {
+            if e.to_string().contains("(404)") {
+                anyhow!(
+                    "the node at {} keeps no history by address; it needs 0.2.5 or later",
+                    self.base
+                )
+            } else {
+                e
+            }
+        })
     }
 
     pub fn validators(&self) -> Result<ValidatorsResponse> {

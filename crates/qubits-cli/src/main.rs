@@ -2,6 +2,7 @@
 
 mod chain;
 mod contract;
+mod history;
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
@@ -71,10 +72,15 @@ enum Command {
         #[arg(long)]
         key: PathBuf,
     },
-    /// Show an account's balances, policies and pending vault actions.
+    /// Show an account's balances, policies and pending vault actions; `account history` lists
+    /// its transactions.
+    #[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
     Account {
         /// Address (`qb1…`).
-        address: Address,
+        #[arg(required = true)]
+        address: Option<Address>,
+        #[command(subcommand)]
+        command: Option<AccountCommand>,
     },
     /// Send tokens. From a vault, the transfer waits for the vault delay.
     Transfer {
@@ -105,6 +111,24 @@ enum Command {
     /// Contracts: `qubits contract call 'qb1….transfer(qb1…, 5)'`.
     #[command(subcommand)]
     Contract(ContractCommand),
+}
+
+#[derive(Subcommand)]
+enum AccountCommand {
+    /// Transactions that name an address, newest first, one a line.
+    History {
+        /// Address (`qb1…`).
+        address: Address,
+        /// How many to show, at most 100.
+        #[arg(long, default_value_t = 25)]
+        limit: usize,
+        /// Go on from the cursor an earlier page ended with.
+        #[arg(long)]
+        before: Option<String>,
+        /// Print the node's answer as JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -636,7 +660,33 @@ fn run(cli: Cli) -> Result<()> {
             send(&client, tx, role, Payload::SetAuth { auth })?;
         }
         Command::Address { key } => println!("{}", key_address(&key)?),
-        Command::Account { address } => print_json(&client.account(&address)?)?,
+        Command::Account {
+            command:
+                Some(AccountCommand::History {
+                    address,
+                    limit,
+                    before,
+                    json,
+                }),
+            ..
+        } => {
+            if let Some(cursor) = &before
+                && !history::is_cursor(cursor)
+            {
+                bail!("--before takes the cursor an earlier page ended with, like 1234-0");
+            }
+            let page = client.history(&address, limit, before.as_deref())?;
+            if json {
+                print_json(&page)?;
+            } else {
+                history::print(&address, &page);
+            }
+        }
+        Command::Account {
+            address: Some(address),
+            command: None,
+        } => print_json(&client.account(&address)?)?,
+        Command::Account { .. } => bail!("give an address"),
         Command::Tx(TxCommand::Status { id }) => print_json(&client.transaction(&id)?)?,
         Command::Tx(TxCommand::Show { file }) => describe(&read_partial(&file)?),
         Command::Tx(TxCommand::Sign {

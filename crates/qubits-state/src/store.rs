@@ -301,7 +301,16 @@ impl Store {
         let mut options = Options::default();
         options.create_if_missing(true);
         options.create_missing_column_families(true);
-        let cfs = COLUMN_FAMILIES.map(|name| ColumnFamilyDescriptor::new(name, Options::default()));
+        // a column family a later version added is opened too, so going back a version works
+        let mut names: Vec<String> = COLUMN_FAMILIES.iter().map(|n| n.to_string()).collect();
+        for name in DB::list_cf(&options, path).unwrap_or_default() {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        let cfs = names
+            .into_iter()
+            .map(|name| ColumnFamilyDescriptor::new(name, Options::default()));
         let db = DB::open_cf_descriptors(&options, path, cfs).map_err(err)?;
         Ok(Store { db: Arc::new(db) })
     }

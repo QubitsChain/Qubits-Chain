@@ -316,6 +316,64 @@ fn transfers_vault_recovery_and_rotation() {
 }
 
 #[test]
+fn an_accounts_history_reads_newest_first() {
+    let (env, alice) = setup();
+    let bob = env.new_key("bob", "ml-dsa-65");
+    let pw = ["--password-file", "pw", "--wait"];
+    let send = |key: &str, to: &str, amount: &str| {
+        let out = env.ok(&[
+            &["transfer", "--key", key, "--to", to, "--amount", amount][..],
+            &pw,
+        ]
+        .concat());
+        out.split_whitespace().nth(1).unwrap().to_owned()
+    };
+    let first = send("alice.json", &bob, "300000");
+    let second = send("alice.json", &bob, "200000");
+    let back = send("bob.json", &alice, "1000");
+
+    let out = env.ok(&["account", "history", &bob]);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 3, "{out}");
+    assert!(lines[0].contains(&back) && lines[0].contains(&format!("sent 1000 to {alice}")));
+    assert!(
+        lines[1].contains(&second) && lines[1].contains(&format!("received 200000 from {alice}"))
+    );
+    assert!(
+        lines[2].contains(&first) && lines[2].contains(" UTC "),
+        "{out}"
+    );
+
+    // a page of one ends with the command for the next
+    let out = env.ok(&["account", "history", &bob, "--limit", "1"]);
+    let next = out.lines().last().unwrap();
+    assert!(
+        next.starts_with(&format!("older: qubits account history {bob} --before ")),
+        "{out}"
+    );
+    let cursor = next.rsplit(' ').next().unwrap();
+    let out = env.ok(&[
+        "account", "history", &bob, "--limit", "1", "--before", cursor,
+    ]);
+    assert!(out.lines().next().unwrap().contains(&second), "{out}");
+
+    let page: qubits_types::rpc::AccountTransactionsResponse =
+        serde_json::from_str(&env.ok(&["account", "history", &alice, "--json"])).unwrap();
+    assert_eq!(page.transactions.len(), 3);
+    assert_eq!(page.next, None);
+
+    let stranger = env.new_key("stranger", "ml-dsa-65");
+    assert_eq!(
+        env.ok(&["account", "history", &stranger]),
+        "no transactions\n"
+    );
+    assert!(
+        env.err(&["account", "history", &bob, "--before", "soon"])
+            .contains("--before takes")
+    );
+}
+
+#[test]
 fn chain_errors_are_reported() {
     let (env, alice) = setup();
     let carol = env.new_key("carol", "ml-dsa-65");
