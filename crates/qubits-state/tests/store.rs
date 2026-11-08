@@ -1,6 +1,9 @@
 use qubits_crypto::{SchemeId, SecretKey};
-use qubits_state::{CommittedBlock, MemoryState, Overlay, StateReader, Store, Verdict, WriteSet};
-use qubits_types::{ChainParams, Genesis, Hash};
+use qubits_state::{
+    CommittedBlock, MemoryState, Overlay, PutBlock, StateReader, Store, TxLocation, Verdict,
+    WriteSet,
+};
+use qubits_types::{Address, ChainParams, Genesis, Hash};
 
 fn genesis() -> Genesis {
     Genesis {
@@ -50,6 +53,7 @@ fn commit(store: &Store, height: u64, w: &WriteSet, bytes: &[u8], tx_ids: &[Hash
         state_root: root,
         bytes,
         tx_ids,
+        addresses: &[],
         receipts: &[],
         meta: &[],
     };
@@ -129,6 +133,7 @@ fn mismatched_commits_are_refused() {
         state_root: Hash([9; 32]),
         bytes: b"x",
         tx_ids: &[],
+        addresses: &[],
         receipts: &[],
         meta: &[],
     };
@@ -140,6 +145,7 @@ fn mismatched_commits_are_refused() {
         state_root: prepared.root(),
         bytes: b"x",
         tx_ids: &[],
+        addresses: &[],
         receipts: &[],
         meta: &[],
     };
@@ -211,6 +217,7 @@ fn metadata_is_written_with_blocks_and_alone() {
         state_root: prepared.root(),
         bytes: b"b",
         tx_ids: &[],
+        addresses: &[],
         receipts: &[],
         meta: &meta,
     };
@@ -443,6 +450,7 @@ fn a_snapshot_rebuilds_one_version_from_chunks() {
         state_root: root,
         bytes: b"block5",
         tx_ids: &[Hash([3; 32])],
+        addresses: &[],
         receipts: &[],
         meta: &[(b"tip", vec![1])],
     };
@@ -528,6 +536,7 @@ fn chunks_from_a_lying_source_are_refused() {
                     state_root: root,
                     bytes: b"b",
                     tx_ids: &[],
+                    addresses: &[],
                     receipts: &[],
                     meta: &[],
                 },
@@ -576,6 +585,7 @@ fn chunks_from_a_lying_source_are_refused() {
                 state_root: root,
                 bytes: b"b",
                 tx_ids: &[],
+                addresses: &[],
                 receipts: &[],
                 meta: &[],
             },
@@ -610,6 +620,7 @@ fn restore_all(
         state_root: root,
         bytes: b"b",
         tx_ids: &[],
+        addresses: &[],
         receipts: &[],
         meta: &[],
     };
@@ -685,6 +696,7 @@ fn old_blocks_are_dropped_with_their_index_and_proofs() {
             state_root: prepared.root(),
             bytes: bytes.as_bytes(),
             tx_ids: &[Hash([h as u8; 32])],
+            addresses: &[],
             receipts: &[],
             meta: &[(b"proof", vec![h as u8])],
         };
@@ -701,6 +713,7 @@ fn old_blocks_are_dropped_with_their_index_and_proofs() {
                 7.. => Verdict::Stop,
                 _ => Verdict::Delete {
                     tx_ids: vec![Hash([h as u8; 32])],
+                    addresses: vec![],
                     meta: vec![b"proof".to_vec()],
                 },
             })
@@ -735,6 +748,7 @@ fn old_blocks_are_dropped_with_their_index_and_proofs() {
         .prune_history(100, 1, |_, _| {
             Ok(Verdict::Delete {
                 tx_ids: vec![],
+                addresses: vec![],
                 meta: vec![],
             })
         })
@@ -745,9 +759,147 @@ fn old_blocks_are_dropped_with_their_index_and_proofs() {
         .prune_history(8, 100, |_, _| {
             Ok(Verdict::Delete {
                 tx_ids: vec![],
+                addresses: vec![],
                 meta: vec![],
             })
         })
         .unwrap();
     assert_eq!((deleted, store.blocks_from().unwrap()), (0, 8));
+}
+
+fn at(height: u64, index: u32) -> TxLocation {
+    TxLocation { height, index }
+}
+
+fn listed(store: &Store, who: Address) -> Vec<(u64, u32)> {
+    store
+        .address_transactions(&who, None, 100)
+        .unwrap()
+        .into_iter()
+        .map(|l| (l.height, l.index))
+        .collect()
+}
+
+/// Blocks 1..=4 of two transactions: the first names alice and bob, the second alice alone.
+fn commit_named(store: &Store, alice: Address, bob: Address) {
+    for h in 1..=4u64 {
+        let prepared = store.prepare(h, &writes(&[("k", Some("v"))])).unwrap();
+        let bytes = format!("block{h}");
+        let block = CommittedBlock {
+            height: h,
+            state_root: prepared.root(),
+            bytes: bytes.as_bytes(),
+            tx_ids: &[Hash([h as u8; 32]), Hash([h as u8 + 100; 32])],
+            addresses: &[vec![alice, bob], vec![alice]],
+            receipts: &[],
+            meta: &[],
+        };
+        store.commit_block(&block, prepared).unwrap();
+    }
+}
+
+#[test]
+fn transactions_are_listed_by_address_newest_first() {
+    let (_dir, store) = open();
+    init(&store);
+    let (alice, bob, carol) = (Address([1; 32]), Address([2; 32]), Address([3; 32]));
+    commit_named(&store, alice, bob);
+
+    assert_eq!(listed(&store, bob), [(4, 0), (3, 0), (2, 0), (1, 0)]);
+    assert_eq!(
+        listed(&store, alice),
+        [
+            (4, 1),
+            (4, 0),
+            (3, 1),
+            (3, 0),
+            (2, 1),
+            (2, 0),
+            (1, 1),
+            (1, 0)
+        ]
+    );
+    assert!(listed(&store, carol).is_empty());
+
+    // pages go on from just below the last one given
+    let page = store.address_transactions(&alice, None, 3).unwrap();
+    assert_eq!(page, [at(4, 1), at(4, 0), at(3, 1)]);
+    let page = store
+        .address_transactions(&alice, Some(at(3, 1)), 3)
+        .unwrap();
+    assert_eq!(page, [at(3, 0), at(2, 1), at(2, 0)]);
+    // a cursor that is not an entry works too
+    let page = store
+        .address_transactions(&bob, Some(at(3, 7)), 10)
+        .unwrap();
+    assert_eq!(page, [at(3, 0), at(2, 0), at(1, 0)]);
+    assert!(
+        store
+            .address_transactions(&bob, Some(at(1, 0)), 10)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn the_address_index_follows_dropped_and_returned_blocks() {
+    let (_dir, store) = open();
+    init(&store);
+    let (alice, bob) = (Address([1; 32]), Address([2; 32]));
+    commit_named(&store, alice, bob);
+
+    store
+        .prune_history(3, 100, |h, _| {
+            Ok(Verdict::Delete {
+                tx_ids: vec![Hash([h as u8; 32]), Hash([h as u8 + 100; 32])],
+                addresses: vec![vec![alice, bob], vec![alice]],
+                meta: vec![],
+            })
+        })
+        .unwrap();
+    assert_eq!(store.blocks_from().unwrap(), 3);
+    assert_eq!(listed(&store, bob), [(4, 0), (3, 0)]);
+    assert_eq!(listed(&store, alice), [(4, 1), (4, 0), (3, 1), (3, 0)]);
+
+    // put back from an era file, without receipts: listed as the node was told
+    let put = |h: u64| PutBlock {
+        bytes: format!("block{h}").into_bytes(),
+        tx_ids: vec![Hash([h as u8; 32])],
+        addresses: vec![vec![bob]],
+        meta: vec![],
+    };
+    store.put_blocks(1, &[put(1), put(2)]).unwrap();
+    assert_eq!(listed(&store, bob), [(4, 0), (3, 0), (2, 0), (1, 0)]);
+}
+
+#[test]
+fn the_address_index_is_rebuilt_from_the_blocks_held() {
+    let (_dir, store) = open();
+    init(&store);
+    let (alice, bob, carol) = (Address([1; 32]), Address([2; 32]), Address([3; 32]));
+    assert_eq!(store.address_index_version().unwrap(), None);
+    commit_named(&store, alice, bob);
+
+    // a new rule: everything is carol's now
+    let mut seen = Vec::new();
+    let blocks = store
+        .rebuild_address_index(7, |h, bytes| {
+            assert_eq!(bytes, format!("block{h}").as_bytes());
+            seen.push(h);
+            Ok(vec![vec![carol]])
+        })
+        .unwrap();
+    assert_eq!((blocks, seen), (4, vec![1, 2, 3, 4]));
+    assert_eq!(store.address_index_version().unwrap(), Some(7));
+    assert!(listed(&store, alice).is_empty(), "the old entries went");
+    assert!(listed(&store, bob).is_empty());
+    assert_eq!(listed(&store, carol), [(4, 0), (3, 0), (2, 0), (1, 0)]);
+
+    // a rebuild that fails leaves no version, so the next open tries again
+    assert!(
+        store
+            .rebuild_address_index(8, |_, _| Err("bad block".into()))
+            .is_err()
+    );
+    assert_eq!(store.address_index_version().unwrap(), None);
 }

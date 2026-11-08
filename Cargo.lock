@@ -1630,7 +1630,7 @@ dependencies = [
 
 [[package]]
 name = "qubits-cli"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "clap",
@@ -1649,7 +1649,7 @@ dependencies = [
 
 [[package]]
 name = "qubits-consensus"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "borsh",
  "qubits-crypto",
@@ -1660,7 +1660,7 @@ dependencies = [
 
 [[package]]
 name = "qubits-crypto"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "argon2",
  "borsh",
@@ -1678,7 +1678,7 @@ dependencies = [
 
 [[package]]
 name = "qubits-e2e"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "hex",
  "qubits-consensus",
@@ -1691,7 +1691,7 @@ dependencies = [
 
 [[package]]
 name = "qubits-execution"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "borsh",
  "qubits-crypto",
@@ -1704,7 +1704,7 @@ dependencies = [
 
 [[package]]
 name = "qubits-node"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "axum",
@@ -1735,7 +1735,7 @@ dependencies = [
 
 [[package]]
 name = "qubits-state"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "blake3",
@@ -1749,7 +1749,7 @@ dependencies = [
 
 [[package]]
 name = "qubits-types"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "bech32",
  "blake3",
@@ -1762,7 +1762,7 @@ dependencies = [
 
 [[package]]
 name = "qubits-vm"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "qubits-crypto",
  "qubits-types",
@@ -1772,7 +1772,7 @@ dependencies = [
 
 [[package]]
 name = "qubits-wasm"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "hex",
  "qubits-crypto",

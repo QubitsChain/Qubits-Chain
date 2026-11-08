@@ -72,6 +72,7 @@ pub fn prune_once(node: &Node, keep_ms: u64, margin: u64, limit: usize) -> Resul
                     .collect();
                 Ok(Verdict::Delete {
                     tx_ids,
+                    addresses: crate::index::of_block(node.store(), &block)?,
                     meta: vec![finality_key(height)],
                 })
             })?;

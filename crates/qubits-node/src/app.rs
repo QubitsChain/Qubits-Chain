@@ -168,11 +168,19 @@ pub(crate) fn write_committed(
             borsh::to_vec(&all).expect("encoding cannot fail"),
         ));
     }
+    let addresses: Vec<Vec<Address>> = block
+        .payload
+        .transactions
+        .iter()
+        .zip(&executed.receipts)
+        .map(|(tx, receipt)| crate::index::addresses(tx, Some(receipt)))
+        .collect();
     let committed = CommittedBlock {
         height: block.height,
         state_root: block.payload.state_root,
         bytes: &bytes,
         tx_ids: &tx_ids,
+        addresses: &addresses,
         receipts: &kept_receipts,
         meta: &meta,
     };

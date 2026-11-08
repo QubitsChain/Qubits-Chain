@@ -64,11 +64,25 @@ pub struct TransactionResponse {
     pub id: Hash,
     pub status: TxStatus,
     pub block_height: Option<u64>,
+    #[serde(default)]
+    pub block_timestamp_ms: Option<u64>,
     pub index: Option<u32>,
     pub transaction: SignedTransaction,
     /// What a contract transaction did; plain transactions have none.
     #[serde(default)]
     pub receipt: Option<Receipt>,
+}
+
+/// Included transactions that name an address, newest first. See
+/// `/v1/accounts/{address}/transactions`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountTransactionsResponse {
+    pub address: Address,
+    pub transactions: Vec<TransactionResponse>,
+    /// Pass as `before` for the page after this one; none once the oldest held is given.
+    pub next: Option<String>,
+    /// The list is complete from this block on; older history was dropped or never held.
+    pub blocks_from: u64,
 }
 
 /// Every deployed contract, oldest first.

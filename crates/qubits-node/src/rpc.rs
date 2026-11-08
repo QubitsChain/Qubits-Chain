@@ -9,10 +9,11 @@ use qubits_execution::{TxError, keys, read_account, read_contracts};
 use qubits_state::StateReader;
 use qubits_types::limits::{MAX_ARGS_BYTES, MAX_FUNCTION_NAME, MAX_TX_BYTES};
 use qubits_types::rpc::{
-    AccountProofResponse, AccountResponse, BalanceView, BlockResponse, ContractResponse,
-    ContractsResponse, EpochSummary, EpochsResponse, ErasResponse, ErrorResponse, RawBlockResponse,
-    RewardResponse, RewardsResponse, SnapshotResponse, StatusResponse, SubmitRequest,
-    SubmitResponse, TransactionResponse, TxStatus, ValidatorsResponse, ViewRequest, ViewResponse,
+    AccountProofResponse, AccountResponse, AccountTransactionsResponse, BalanceView, BlockResponse,
+    ContractResponse, ContractsResponse, EpochSummary, EpochsResponse, ErasResponse, ErrorResponse,
+    RawBlockResponse, RewardResponse, RewardsResponse, SnapshotResponse, StatusResponse,
+    SubmitRequest, SubmitResponse, TransactionResponse, TxStatus, ValidatorsResponse, ViewRequest,
+    ViewResponse,
 };
 use qubits_types::{Address, AssetId, Contract, Hash, Receipt, SignedTransaction};
 use tower_http::cors::CorsLayer;
@@ -24,6 +25,11 @@ type Shared = Arc<Node>;
 pub const MAX_CONCURRENT_SUBMITS: usize = 32;
 pub const DEFAULT_CHUNK_BYTES: usize = 2 * 1024 * 1024;
 pub const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+pub const HISTORY_PAGE: usize = 25;
+pub const MAX_HISTORY_PAGE: usize = 100;
+/// A page of history ends early once it has read this much of blocks, since a transaction is
+/// read out of its whole block.
+pub const MAX_HISTORY_READ: usize = 8 * 1024 * 1024;
 
 pub struct ApiError(StatusCode, String);
 
@@ -62,6 +68,10 @@ pub fn router(node: Shared) -> Router {
         .route("/metrics", get(metrics))
         .route("/v1/status", get(status))
         .route("/v1/accounts/{address}", get(account))
+        .route(
+            "/v1/accounts/{address}/transactions",
+            get(account_transactions),
+        )
         .route("/v1/blocks/latest", get(latest_block))
         .route("/v1/blocks/{height}", get(block))
         .route("/v1/blocks/{height}/raw", get(raw_block))
@@ -144,6 +154,88 @@ async fn account(
             .map(|(asset, amount)| BalanceView { asset, amount })
             .collect(),
         pending: account.pending,
+    }))
+}
+
+#[derive(serde::Deserialize)]
+struct HistoryQuery {
+    before: Option<String>,
+    // read here rather than by serde, so a bad one gets the usual JSON error
+    limit: Option<String>,
+}
+
+fn cursor(at: qubits_state::TxLocation) -> String {
+    format!("{}-{}", at.height, at.index)
+}
+
+fn parse_cursor(text: &str) -> Result<qubits_state::TxLocation, ApiError> {
+    let (height, index) = text
+        .split_once('-')
+        .ok_or_else(|| bad_request("`before` takes a `next` from a previous page"))?;
+    Ok(qubits_state::TxLocation {
+        height: height.parse().map_err(bad_request)?,
+        index: index.parse().map_err(bad_request)?,
+    })
+}
+
+async fn account_transactions(
+    State(node): State<Shared>,
+    Path(address): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<HistoryQuery>,
+) -> ApiResult<AccountTransactionsResponse> {
+    let address: Address = address.parse().map_err(bad_request)?;
+    let before = query.before.as_deref().map(parse_cursor).transpose()?;
+    let limit = match query.limit {
+        Some(text) => text.parse::<usize>().map_err(bad_request)?,
+        None => HISTORY_PAGE,
+    }
+    .clamp(1, MAX_HISTORY_PAGE);
+    let found = node
+        .store()
+        .address_transactions(&address, before, limit + 1)?;
+    let mut more = found.len() > limit;
+    let mut transactions = Vec::new();
+    let mut last = None;
+    let mut read = 0;
+    let mut held: Option<ChainBlock> = None;
+    for at in found.into_iter().take(limit) {
+        if held.as_ref().map(|b| b.height) != Some(at.height) {
+            if read >= MAX_HISTORY_READ {
+                more = true;
+                break;
+            }
+            // an entry of a block put back from an era file that never linked: skip it
+            held = match node.store().block(at.height)? {
+                Some(bytes) => {
+                    read += bytes.len();
+                    Some(borsh::from_slice(&bytes).map_err(|e| {
+                        NodeError::Storage(format!("corrupt block {}: {e}", at.height))
+                    })?)
+                }
+                None => None,
+            };
+        }
+        last = Some(at);
+        let Some(block) = &held else { continue };
+        let Some(transaction) = block.payload.transactions.get(at.index as usize) else {
+            continue;
+        };
+        let id = transaction.id();
+        transactions.push(TransactionResponse {
+            id,
+            status: TxStatus::Included,
+            block_height: Some(at.height),
+            block_timestamp_ms: Some(block.payload.timestamp_ms),
+            index: Some(at.index),
+            transaction: transaction.clone(),
+            receipt: receipt(&node, &id)?,
+        });
+    }
+    Ok(Json(AccountTransactionsResponse {
+        address,
+        transactions,
+        next: last.filter(|_| more).map(cursor),
+        blocks_from: node.store().blocks_from()?,
     }))
 }
 
@@ -478,6 +570,7 @@ async fn transaction(
             id,
             status: TxStatus::Pending,
             block_height: None,
+            block_timestamp_ms: None,
             index: None,
             transaction,
             receipt: None,
@@ -504,6 +597,7 @@ pub(crate) fn included(node: &Node, id: &Hash) -> Result<Option<TransactionRespo
         id: *id,
         status: TxStatus::Included,
         block_height: Some(location.height),
+        block_timestamp_ms: Some(block.payload.timestamp_ms),
         index: Some(location.index),
         transaction,
         receipt: receipt(node, id)?,

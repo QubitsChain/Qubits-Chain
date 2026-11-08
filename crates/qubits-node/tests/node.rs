@@ -497,6 +497,91 @@ fn http_api_end_to_end() {
     assert_eq!(code, 404);
 }
 
+fn included(server: &Server, stx: &SignedTransaction) -> u64 {
+    let mut height = None;
+    wait_for("inclusion", 10_000, || {
+        if let (200, Ok(r)) =
+            get::<TransactionResponse>(server, &format!("/v1/transactions/{}", stx.id()))
+        {
+            height = r.block_height;
+        }
+        height.is_some()
+    });
+    height.unwrap()
+}
+
+fn history(server: &Server, who: &Address, query: &str) -> AccountTransactionsResponse {
+    let (code, page) = get::<AccountTransactionsResponse>(
+        server,
+        &format!("/v1/accounts/{who}/transactions{query}"),
+    );
+    assert_eq!(code, 200);
+    page.unwrap()
+}
+
+fn ids(page: &AccountTransactionsResponse) -> Vec<Hash> {
+    page.transactions.iter().map(|t| t.id).collect()
+}
+
+#[test]
+fn transactions_are_listed_by_address() {
+    let server = start_server();
+    let (bob_key, carol, dave) = (key(2), addr(&key(3)), addr(&key(4)));
+    let bob = addr(&bob_key);
+    let paid: Vec<SignedTransaction> = (0..3)
+        .map(|n| tx(&alice(), n, n == 0, pay(bob, 1_000_000)))
+        .collect();
+    for stx in &paid {
+        assert_eq!(post_tx(&server, stx).0, 202);
+    }
+    for stx in &paid {
+        included(&server, stx);
+    }
+    let passed_on = tx(&bob_key, 0, true, pay(carol, 5));
+    assert_eq!(post_tx(&server, &passed_on).0, 202);
+    let height = included(&server, &passed_on);
+
+    let bob_page = history(&server, &bob, "");
+    let mut expected: Vec<Hash> = paid.iter().map(SignedTransaction::id).collect();
+    expected.push(passed_on.id());
+    expected.reverse();
+    assert_eq!(ids(&bob_page), expected, "newest first, sent and received");
+    assert_eq!(bob_page.next, None);
+    assert_eq!(bob_page.blocks_from, 1);
+    let newest = &bob_page.transactions[0];
+    assert_eq!(newest.status, TxStatus::Included);
+    assert_eq!(newest.block_height, Some(height));
+    assert_eq!(newest.transaction, passed_on);
+    let block_time = get::<BlockResponse>(&server, &format!("/v1/blocks/{height}"))
+        .1
+        .unwrap()
+        .timestamp_ms;
+    assert_eq!(newest.block_timestamp_ms, Some(block_time));
+
+    assert_eq!(ids(&history(&server, &carol, "")), [passed_on.id()]);
+    assert_eq!(ids(&history(&server, &addr(&alice()), "")), expected[1..]);
+    let nobody = history(&server, &dave, "");
+    assert!(nobody.transactions.is_empty());
+    assert_eq!(nobody.next, None);
+
+    // pages of two, each going on from the last
+    let first = history(&server, &bob, "?limit=2");
+    assert_eq!(ids(&first), expected[..2]);
+    let next = first.next.expect("more to come");
+    let second = history(&server, &bob, &format!("?limit=2&before={next}"));
+    assert_eq!(ids(&second), expected[2..]);
+    assert_eq!(second.next, None);
+
+    for bad in [
+        "/v1/accounts/not-an-address/transactions".to_string(),
+        format!("/v1/accounts/{bob}/transactions?before=yesterday"),
+        format!("/v1/accounts/{bob}/transactions?limit=lots"),
+    ] {
+        let (code, _) = get::<AccountTransactionsResponse>(&server, &bad);
+        assert_eq!(code, 400, "{bad}");
+    }
+}
+
 #[test]
 fn fees_show_up_on_the_rewards_routes() {
     let server = start_server();

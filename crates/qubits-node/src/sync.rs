@@ -473,11 +473,13 @@ impl Follower {
                 encode(&|| borsh::to_vec(&later).expect("encoding cannot fail")),
             ),
         ];
+        let addresses = crate::index::of_payload(&block);
         let committed = CommittedBlock {
             height,
             state_root: block.payload.state_root,
             bytes: &bytes,
             tx_ids: &tx_ids,
+            addresses: &addresses,
             receipts: &[],
             meta: &meta,
         };
@@ -496,6 +498,7 @@ impl Follower {
                     .iter()
                     .map(SignedTransaction::id)
                     .collect(),
+                addresses: crate::index::of_payload(&e.block),
                 meta: vec![(
                     finality_key(e.block.height),
                     borsh::to_vec(&e.proof).expect("encoding cannot fail"),

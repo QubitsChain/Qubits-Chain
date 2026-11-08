@@ -6,7 +6,7 @@ use jmt::proof::{SparseMerkleProof, SparseMerkleRangeProof};
 use jmt::restore::{JellyfishMerkleRestore, StateSnapshotReceiver};
 use jmt::storage::{LeafNode, Node, NodeBatch, NodeKey, TreeReader, TreeUpdateBatch, TreeWriter};
 use jmt::{JellyfishMerkleTree, KeyHash, OwnedValue, RootHash, SimpleHasher, Version};
-use qubits_types::{Genesis, Hash};
+use qubits_types::{Address, Genesis, Hash};
 use rocksdb::{
     ColumnFamily, ColumnFamilyDescriptor, DB, Direction, IteratorMode, Options, WriteBatch,
     WriteOptions,
@@ -23,7 +23,9 @@ const CF_META: &str = "meta";
 const CF_PENDING_BLOCKS: &str = "pending_blocks";
 const CF_STALE_NODES: &str = "jmt_stale_nodes";
 const CF_STALE_VALUES: &str = "jmt_stale_values";
-const COLUMN_FAMILIES: [&str; 9] = [
+/// address || height || index, empty values: which transactions name an address.
+const CF_ADDRESS_INDEX: &str = "address_index";
+const COLUMN_FAMILIES: [&str; 10] = [
     CF_NODES,
     CF_VALUES,
     CF_BLOCKS,
@@ -33,9 +35,11 @@ const COLUMN_FAMILIES: [&str; 9] = [
     CF_PENDING_BLOCKS,
     CF_STALE_NODES,
     CF_STALE_VALUES,
+    CF_ADDRESS_INDEX,
 ];
 const META_PRUNED_BEFORE: &[u8] = b"pruned_before";
 const META_BLOCKS_FROM: &[u8] = b"blocks_from";
+const META_ADDRESS_INDEX: &[u8] = b"address_index";
 
 const META_GENESIS: &[u8] = b"genesis";
 const META_LATEST_HEIGHT: &[u8] = b"latest_height";
@@ -111,6 +115,8 @@ pub type PendingBlock = (Vec<u8>, Vec<u8>);
 pub struct PutBlock {
     pub bytes: Vec<u8>,
     pub tx_ids: Vec<Hash>,
+    /// What each transaction is listed under, in block order.
+    pub addresses: Vec<Vec<Address>>,
     pub meta: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
@@ -119,6 +125,8 @@ pub struct CommittedBlock<'a> {
     pub state_root: Hash,
     pub bytes: &'a [u8],
     pub tx_ids: &'a [Hash],
+    /// What each transaction is listed under, in block order.
+    pub addresses: &'a [Vec<Address>],
     /// Only the transactions that have something to say: most are plain transfers.
     pub receipts: &'a [(Hash, Vec<u8>)],
     pub meta: &'a [(&'a [u8], Vec<u8>)],
@@ -188,6 +196,7 @@ pub enum Verdict {
     Keep,
     Delete {
         tx_ids: Vec<Hash>,
+        addresses: Vec<Vec<Address>>,
         meta: Vec<Vec<u8>>,
     },
     /// this block and everything after it stay
@@ -257,6 +266,27 @@ impl TreeReader for Reader<'_> {
     fn get_rightmost_leaf(&self) -> anyhow::Result<Option<(NodeKey, LeafNode)>> {
         anyhow::bail!("state tree restoration is not supported")
     }
+}
+
+fn address_key(address: &Address, at: TxLocation) -> [u8; 44] {
+    let mut out = [0u8; 44];
+    out[..32].copy_from_slice(&address.0);
+    out[32..40].copy_from_slice(&at.height.to_be_bytes());
+    out[40..].copy_from_slice(&at.index.to_be_bytes());
+    out
+}
+
+fn address_keys(height: u64, addresses: &[Vec<Address>]) -> impl Iterator<Item = [u8; 44]> + '_ {
+    addresses
+        .iter()
+        .enumerate()
+        .flat_map(move |(index, named)| {
+            let at = TxLocation {
+                height,
+                index: index as u32,
+            };
+            named.iter().map(move |address| address_key(address, at))
+        })
 }
 
 fn value_key(key_hash: KeyHash, version: Version) -> [u8; 40] {
@@ -426,6 +456,9 @@ impl Store {
                 borsh::to_vec(&location).map_err(err)?,
             );
         }
+        for key in address_keys(block.height, block.addresses) {
+            batch.put_cf(self.cf(CF_ADDRESS_INDEX), key, []);
+        }
         for (id, receipt) in block.receipts {
             batch.put_cf(self.cf(CF_RECEIPTS), id.0, receipt);
         }
@@ -547,11 +580,18 @@ impl Store {
                 match decide(height, &bytes).map_err(err)? {
                     Verdict::Stop => break,
                     Verdict::Keep => {}
-                    Verdict::Delete { tx_ids, meta } => {
+                    Verdict::Delete {
+                        tx_ids,
+                        addresses,
+                        meta,
+                    } => {
                         batch.delete_cf(self.cf(CF_BLOCKS), height.to_be_bytes());
                         for id in tx_ids {
                             batch.delete_cf(self.cf(CF_TX_INDEX), id.0);
                             batch.delete_cf(self.cf(CF_RECEIPTS), id.0);
+                        }
+                        for key in address_keys(height, &addresses) {
+                            batch.delete_cf(self.cf(CF_ADDRESS_INDEX), key);
                         }
                         for key in meta {
                             batch.delete_cf(self.cf(CF_META), meta_key(&key));
@@ -595,6 +635,9 @@ impl Store {
                     borsh::to_vec(&location).map_err(err)?,
                 );
             }
+            for key in address_keys(height, &block.addresses) {
+                batch.put_cf(self.cf(CF_ADDRESS_INDEX), key, []);
+            }
         }
         self.write(batch)
     }
@@ -607,7 +650,7 @@ impl Store {
 
     /// Undoes a put-back that didn't link up: blocks in `from..to`, below the ones held, and
     /// the meta keys written with them. Index entries of blocks that never linked lead nowhere
-    /// and are left alone.
+    /// and are left alone; readers skip them.
     pub fn delete_blocks(&self, from: u64, to: u64, meta: &[Vec<u8>]) -> Result<(), Error> {
         if to > self.blocks_from()? {
             return Err(err(
@@ -875,6 +918,9 @@ impl Store {
                 borsh::to_vec(&location).map_err(err)?,
             );
         }
+        for key in address_keys(block.height, block.addresses) {
+            batch.put_cf(self.cf(CF_ADDRESS_INDEX), key, []);
+        }
         for (key, value) in block.meta {
             batch.put_cf(self.cf(CF_META), meta_key(key), value);
         }
@@ -942,6 +988,100 @@ impl Store {
             Some(bytes) => Ok(Some(borsh::from_slice(&bytes).map_err(err)?)),
             None => Ok(None),
         }
+    }
+
+    /// Where the transactions listed under `address` are, newest first, from just below
+    /// `before` on.
+    pub fn address_transactions(
+        &self,
+        address: &Address,
+        before: Option<TxLocation>,
+        limit: usize,
+    ) -> Result<Vec<TxLocation>, Error> {
+        let start = address_key(
+            address,
+            before.unwrap_or(TxLocation {
+                height: u64::MAX,
+                index: u32::MAX,
+            }),
+        );
+        let mut found = Vec::new();
+        for item in self.db.iterator_cf(
+            self.cf(CF_ADDRESS_INDEX),
+            IteratorMode::From(&start, Direction::Reverse),
+        ) {
+            if found.len() >= limit {
+                break;
+            }
+            let (key, _) = item.map_err(err)?;
+            if key.len() != 44 || key[..32] != address.0 {
+                break;
+            }
+            let at = TxLocation {
+                height: u64::from_be_bytes(key[32..40].try_into().expect("8 bytes")),
+                index: u32::from_be_bytes(key[40..44].try_into().expect("4 bytes")),
+            };
+            if Some(at) != before {
+                found.push(at);
+            }
+        }
+        Ok(found)
+    }
+
+    /// The version of the rule the address index was built with, if it was built.
+    pub fn address_index_version(&self) -> Result<Option<u32>, Error> {
+        match self
+            .db
+            .get_cf(self.cf(CF_META), META_ADDRESS_INDEX)
+            .map_err(err)?
+        {
+            Some(bytes) => Ok(Some(u32::from_be_bytes(
+                bytes
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| err("corrupt address index version"))?,
+            ))),
+            None => Ok(None),
+        }
+    }
+
+    /// Throws the address index away and builds it again from every block held, `addresses`
+    /// saying what each block's transactions are listed under. Nothing else may write
+    /// meanwhile. Returns how many blocks it read.
+    pub fn rebuild_address_index(
+        &self,
+        version: u32,
+        mut addresses: impl FnMut(u64, &[u8]) -> Result<Vec<Vec<Address>>, String>,
+    ) -> Result<u64, Error> {
+        const BATCH: usize = 10_000;
+        let mut batch = WriteBatch::default();
+        batch.delete_range_cf(
+            self.cf(CF_ADDRESS_INDEX),
+            [].as_slice(),
+            [0xff; 45].as_slice(),
+        );
+        batch.delete_cf(self.cf(CF_META), META_ADDRESS_INDEX);
+        self.write(std::mem::take(&mut batch))?;
+        let mut blocks = 0;
+        for item in self.db.iterator_cf(self.cf(CF_BLOCKS), IteratorMode::Start) {
+            let (key, bytes) = item.map_err(err)?;
+            let height = u64::from_be_bytes(
+                key.as_ref()
+                    .try_into()
+                    .map_err(|_| err("corrupt block key"))?,
+            );
+            let named = addresses(height, &bytes).map_err(err)?;
+            for key in address_keys(height, &named) {
+                batch.put_cf(self.cf(CF_ADDRESS_INDEX), key, []);
+            }
+            if batch.len() >= BATCH {
+                self.write(std::mem::take(&mut batch))?;
+            }
+            blocks += 1;
+        }
+        batch.put_cf(self.cf(CF_META), META_ADDRESS_INDEX, version.to_be_bytes());
+        self.write(batch)?;
+        Ok(blocks)
     }
 }
 

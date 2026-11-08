@@ -452,6 +452,7 @@ fn restore<R: Read>(node: &Node, reader: &mut Reader<R>, from: u64) -> Result<Su
         pending.push(PutBlock {
             bytes: borsh::to_vec(&block).expect("encoding cannot fail"),
             tx_ids,
+            addresses: crate::index::of_payload(&block),
             meta,
         });
         if pending.len() >= PROOF_EVERY as usize {

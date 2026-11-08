@@ -3,6 +3,7 @@
 mod app;
 pub mod era;
 pub mod history;
+pub mod index;
 mod mempool;
 mod metrics;
 pub mod network;
@@ -136,6 +137,13 @@ impl Node {
                 data_dir.display()
             ))
         })?;
+        if store.address_index_version()? != Some(index::VERSION) {
+            let blocks = store.rebuild_address_index(index::VERSION, |_, bytes| {
+                let block: ChainBlock = borsh::from_slice(bytes).map_err(|e| e.to_string())?;
+                index::of_block(&store, &block)
+            })?;
+            tracing::info!(blocks, "indexed transactions by address");
+        }
         Ok(Node {
             store: Arc::new(store),
             genesis_hash: genesis.hash(),
