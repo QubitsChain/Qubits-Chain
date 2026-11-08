@@ -15,7 +15,7 @@ use qubits_types::rpc::{
     SubmitRequest, SubmitResponse, TransactionResponse, TxStatus, ValidatorsResponse, ViewRequest,
     ViewResponse,
 };
-use qubits_types::{Address, AssetId, Contract, Hash, Receipt, SignedTransaction};
+use qubits_types::{Address, AssetId, Contract, Genesis, Hash, Receipt, SignedTransaction};
 use tower_http::cors::CorsLayer;
 
 use crate::{ChainBlock, Node, NodeError, SubmitError, now_ms};
@@ -67,6 +67,7 @@ pub fn router(node: Shared) -> Router {
         .route("/health", get(health))
         .route("/metrics", get(metrics))
         .route("/v1/status", get(status))
+        .route("/v1/genesis", get(genesis))
         .route("/v1/accounts/{address}", get(account))
         .route(
             "/v1/accounts/{address}/transactions",
@@ -129,6 +130,11 @@ async fn status(State(node): State<Shared>) -> ApiResult<StatusResponse> {
         state_from: node.store().pruned_before()?,
         blocks_from: node.store().blocks_from()?,
     }))
+}
+
+/// The genesis this node started from, in the form `qubits-node init --genesis` reads.
+async fn genesis(State(node): State<Shared>) -> Json<Genesis> {
+    Json(node.genesis().clone())
 }
 
 async fn account(

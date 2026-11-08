@@ -440,7 +440,13 @@ fn http_api_end_to_end() {
     let server = start_server();
     let (code, status) = get::<StatusResponse>(&server, "/v1/status");
     assert_eq!(code, 200);
-    assert_eq!(status.unwrap().chain_id, CHAIN);
+    let status = status.unwrap();
+    assert_eq!(status.chain_id, CHAIN);
+    let (code, started) = get::<Genesis>(&server, "/v1/genesis");
+    assert_eq!(code, 200);
+    let started = started.unwrap();
+    assert_eq!(started, genesis(1));
+    assert_eq!(started.hash(), status.genesis_hash);
 
     let alice_addr = addr(&alice());
     let (_, account) = get::<AccountResponse>(&server, &format!("/v1/accounts/{alice_addr}"));
