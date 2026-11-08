@@ -1,0 +1,35 @@
+[package]
+name = "qubits-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+borsh = "1"
+libfuzzer-sys = "0.4"
+qubits-consensus = { path = "../crates/qubits-consensus" }
+qubits-crypto = { path = "../crates/qubits-crypto" }
+qubits-types = { path = "../crates/qubits-types" }
+
+[[bin]]
+name = "network"
+path = "fuzz_targets/network.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "message"
+path = "fuzz_targets/message.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
