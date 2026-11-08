@@ -595,6 +595,83 @@ fn chunks_from_a_lying_source_are_refused() {
     assert!(store.state_chunk(9, Some([0; 32]), 10).is_err());
 }
 
+fn restore_all(
+    fresh: &Store,
+    version: u64,
+    root: Hash,
+    chunks: Vec<qubits_state::StateChunk>,
+) -> Result<(), qubits_state::Error> {
+    let mut restore = fresh.begin_restore(version, root)?;
+    for chunk in chunks {
+        restore.add_chunk(chunk)?;
+    }
+    let block = CommittedBlock {
+        height: version,
+        state_root: root,
+        bytes: b"b",
+        tx_ids: &[],
+        receipts: &[],
+        meta: &[],
+    };
+    fresh.finish_restore(restore, &block)
+}
+
+#[test]
+fn the_last_chunk_ends_on_the_last_live_leaf() {
+    let (_dir, store) = open();
+    init(&store);
+    let live: WriteSet = (0..10)
+        .map(|i| (format!("live{i}").into_bytes(), Some(b"v".to_vec())))
+        .collect();
+    commit(&store, 1, &live, b"block1", &[]);
+    let later: WriteSet = (0..200)
+        .map(|i| (format!("later{i}").into_bytes(), Some(b"v".to_vec())))
+        .collect();
+    commit(&store, 2, &later, b"block2", &[]);
+
+    let chunks = chunks_of(&store, 1, 1);
+    assert!(
+        chunks
+            .iter()
+            .all(|c| !c.leaves.is_empty() && c.proof.is_some())
+    );
+    assert_eq!(chunks.iter().map(|c| c.leaves.len()).sum::<usize>(), 12);
+
+    let (_dir2, fresh) = open();
+    init(&fresh);
+    let root = store.state_root(1).unwrap();
+    restore_all(&fresh, 1, root, chunks).unwrap();
+    assert_eq!(fresh.state_root(1).unwrap(), root);
+}
+
+#[test]
+fn a_retry_reads_nothing_from_a_failed_restore() {
+    let (_dir, store) = open();
+    init(&store);
+    let first = writes(&[("gone", Some("old")), ("kept", Some("1"))]);
+    commit(&store, 1, &first, b"block1", &[]);
+    commit(&store, 2, &writes(&[("gone", None)]), b"block2", &[]);
+
+    let (_dir2, fresh) = open();
+    init(&fresh);
+    let mut failed = fresh
+        .begin_restore(1, store.state_root(1).unwrap())
+        .unwrap();
+    for chunk in chunks_of(&store, 1, 1) {
+        failed.add_chunk(chunk).unwrap();
+    }
+    drop(failed);
+
+    let root = store.state_root(2).unwrap();
+    restore_all(&fresh, 2, root, chunks_of(&store, 2, 1)).unwrap();
+    let (got, proof) = fresh.get_with_proof(2, b"gone").unwrap();
+    assert_eq!(got, None);
+    Store::verify_proof(root, b"gone", None, &proof).unwrap();
+    assert_eq!(fresh.get_at(2, b"gone").unwrap(), None);
+    assert_eq!(fresh.get_at(2, b"kept").unwrap(), Some(b"1".to_vec()));
+    assert_eq!(fresh.get_at(2, b"a").unwrap(), Some(b"1".to_vec()));
+}
+
 #[test]
 fn old_blocks_are_dropped_with_their_index_and_proofs() {
     let (_dir, store) = open();

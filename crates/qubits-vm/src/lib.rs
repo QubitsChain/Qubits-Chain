@@ -46,6 +46,9 @@ pub mod gas {
 /// What a single run may hold.
 pub mod limits {
     pub const MAX_MEMORY_BYTES: usize = 4 * 1024 * 1024;
+    /// Entries in the one table a contract may have. A table this size costs less to set up
+    /// than starting a run, so it isn't priced on its own.
+    pub const MAX_TABLE_ELEMENTS: usize = 4096;
     pub const MAX_KEY_BYTES: usize = 128;
     pub const MAX_VALUE_BYTES: usize = 16 * 1024;
     pub const MAX_TOPIC_BYTES: usize = 64;
@@ -193,6 +196,7 @@ pub fn run(call: Invocation<'_>, host: &mut dyn Host) -> Result<Finish, Fatal> {
             .memory_size(limits::MAX_MEMORY_BYTES)
             .memories(1)
             .tables(1)
+            .table_elements(limits::MAX_TABLE_ELEMENTS)
             .instances(1)
             .build(),
         contract: call.contract,

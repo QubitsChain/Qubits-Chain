@@ -551,14 +551,23 @@ impl Follower {
     }
 
     pub fn step(&mut self) -> Result<u64, SyncError> {
-        let result = self.try_step();
+        self.step_until(None)
+    }
+
+    /// One pass that gives up once `timeout` is over.
+    pub fn step_within(&mut self, timeout: Duration) -> Result<u64, SyncError> {
+        self.step_until(Some(Instant::now() + timeout))
+    }
+
+    fn step_until(&mut self, deadline: Option<Instant>) -> Result<u64, SyncError> {
+        let result = self.try_step(deadline);
         if result.is_err() {
             self.next_source += 1;
         }
         result
     }
 
-    fn try_step(&mut self) -> Result<u64, SyncError> {
+    fn try_step(&mut self, deadline: Option<Instant>) -> Result<u64, SyncError> {
         let status = self.remote_status()?;
         let remote = status.height;
         let source = self.sources[self.next_source % self.sources.len()].clone();
@@ -583,6 +592,9 @@ impl Follower {
         let mut blocks = Vec::new();
         let mut proofs = Vec::new();
         for height in head.height + 1..=end {
+            if deadline.is_some_and(|d| Instant::now() > d) {
+                return Err(SyncError::Source(format!("{source} is too slow")));
+            }
             let query = if height == end { "?prove=true" } else { "" };
             let raw: RawBlockResponse =
                 self.get(&source, &format!("/v1/blocks/{height}/raw{query}"))?;
@@ -617,11 +629,32 @@ impl Follower {
             if remote <= self.node.head()?.height + max_lag {
                 return Ok(());
             }
-            match self.step() {
+            match self.step_until(Some(deadline)) {
                 Ok(0) => std::thread::sleep(Duration::from_millis(200)),
                 Ok(_) => {}
                 Err(SyncError::Node(e)) => return Err(SyncError::Node(e)),
                 Err(e) => tracing::warn!(error = %e, "sync pass failed"),
+            }
+        }
+    }
+
+    /// Catching up on the validator thread, where consensus waits for it. Every pass has to bring
+    /// blocks and all of it ends by `timeout`, so a source claiming blocks it doesn't serve costs
+    /// one pass.
+    pub fn keep_pace(&mut self, max_lag: u64, timeout: Duration) -> Result<(), SyncError> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let remote = self.remote_height()?;
+            if remote <= self.node.head()?.height + max_lag {
+                return Ok(());
+            }
+            if Instant::now() > deadline {
+                return Err(SyncError::Source("timed out catching up".into()));
+            }
+            if self.step_until(Some(deadline))? == 0 {
+                return Err(SyncError::Source(
+                    "the source claims blocks it doesn't serve".into(),
+                ));
             }
         }
     }

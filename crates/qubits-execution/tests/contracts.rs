@@ -6,7 +6,8 @@ mod common;
 use common::*;
 use qubits_crypto::{Domain, SecretKey};
 use qubits_execution::{
-    BlockError, Executor, TxError, execute_block, keys, read_contracts, simulate, view,
+    BlockError, Executor, TxError, execute_block, keys, read_contracts, recovery_reserve, simulate,
+    view,
 };
 use qubits_state::StateReader;
 use qubits_types::limits::{GAS_PER_BYTE, MAX_BLOCK_GAS, MAX_CALL_DEPTH, MAX_TX_GAS};
@@ -558,6 +559,45 @@ fn a_vault_cannot_send_native_tokens_to_a_contract_at_once() {
     assert_eq!(chain.balance(&escrow), 0);
 }
 
+#[test]
+fn a_queued_call_cannot_spend_the_recovery_fee() {
+    let (owner, recovery, relayer) = (key(1), key(3), key(4));
+    let a = address(&owner);
+    let recovery_policy = AuthPolicy::single(recovery.public_key().clone());
+    let mut chain = Chain::new(&[&owner, &relayer]);
+    let escrow = chain.deploy(ESCROW, vec![]);
+    vault(&mut chain, &owner, &recovery_policy);
+    let reserve = recovery_reserve(&params());
+    let deadline = chain.now + 10 * DELAY;
+    let open = |amount: u128| {
+        let args = open_args(&a, &a, &NATIVE, amount, deadline);
+        call_payload(escrow, "open", args, amount, GAS)
+    };
+
+    let fee = chain.from(&owner, open(0)).tx.fee;
+    let too_much = chain.balance(&a) - fee - reserve + 1;
+    assert_eq!(
+        chain.submit(chain.from(&owner, open(too_much))),
+        Err(TxError::RecoveryReserve { reserve })
+    );
+
+    chain.submit(chain.from(&owner, open(2_000))).unwrap();
+    let most = chain.balance(&a) - fee - reserve - 1_000;
+    chain.submit(chain.from(&owner, open(most))).unwrap();
+
+    chain.now += DELAY;
+    let exec = |id| Payload::ExecutePending { account: a, id };
+    let receipt = chain.submit(chain.from(&relayer, exec(1))).unwrap();
+    assert_eq!(receipt.outcome, Outcome::Done);
+    assert_eq!(chain.balance(&a), reserve + 1_000);
+
+    let receipt = chain.submit(chain.from(&relayer, exec(0))).unwrap();
+    reverted(&receipt, "insufficient balance");
+    assert_eq!(receipt.gas_used, 0);
+    assert_eq!(chain.balance(&a), reserve + 1_000);
+    assert!(chain.account(&a).pending.is_empty());
+}
+
 /// `bounce(next, rest...)`: notes that it ran, then calls `next.bounce(rest...)`. Records
 /// `failed` if that call fails.
 const BOUNCE: &str = r#"(module
@@ -709,6 +749,27 @@ fn memory_stops_at_the_limit() {
 }
 
 #[test]
+fn a_table_stops_at_the_limit() {
+    let mut chain = Chain::new(&[]);
+    let largest = r#"(module (memory (export "memory") 1) (table 4096 funcref))"#;
+    let receipt = chain
+        .submit(chain.deploy_tx(&wasm(largest), vec![], GAS))
+        .unwrap();
+    assert_eq!(receipt.outcome, Outcome::Done);
+    let grow = r#"(module (memory (export "memory") 1) (table 4096 funcref)
+        (func (export "init")
+          (if (i32.ne (table.grow (ref.null func) (i32.const 1)) (i32.const -1)) (then unreachable))))"#;
+    let receipt = chain
+        .submit(chain.deploy_tx(&wasm(grow), vec![], GAS))
+        .unwrap();
+    assert_eq!(
+        receipt.outcome,
+        Outcome::Done,
+        "the grow fails, the contract can see that"
+    );
+}
+
+#[test]
 fn code_that_could_differ_between_machines_is_refused() {
     let mut chain = Chain::new(&[]);
     for text in [
@@ -719,6 +780,8 @@ fn code_that_could_differ_between_machines_is_refused() {
         r#"(module (import "env" "anything" (func)) (memory (export "memory") 1))"#,
         r#"(module (func (export "init")))"#,
         r#"(module (memory (export "memory") 65))"#,
+        r#"(module (memory (export "memory") 1) (table 4097 funcref))"#,
+        r#"(module (memory (export "memory") 1) (table 1000000 funcref))"#,
     ] {
         let receipt = chain
             .submit(chain.deploy_tx(&wasm(text), vec![], GAS))

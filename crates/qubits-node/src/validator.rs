@@ -28,6 +28,8 @@ const KEEP_UP_EVERY_MS: u64 = 2_000;
 const STUCK_CHECKS: u64 = 5;
 /// Peers keep 256 blocks to serve; sync over HTTP well before falling out of that window.
 const MAX_CONSENSUS_LAG: u64 = 128;
+/// The longest one catch-up holds the validator thread.
+const KEEP_PACE: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Copy, Debug)]
 pub struct Timing {
@@ -181,9 +183,9 @@ impl KeepingUp {
     fn sync(&self, far: bool) -> Result<(), SyncError> {
         let mut follower = crate::lock(&self.follower);
         if far {
-            follower.catch_up(2, Duration::from_secs(300))
+            follower.keep_pace(2, KEEP_PACE)
         } else {
-            follower.step().map(|_| ())
+            follower.step_within(KEEP_PACE).map(|_| ())
         }
     }
 }

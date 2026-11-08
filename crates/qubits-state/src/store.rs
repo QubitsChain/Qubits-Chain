@@ -721,13 +721,13 @@ impl Store {
             let Some(next) = self.next_key_hash(hash)? else {
                 break;
             };
-            if bytes >= max_bytes {
-                done = false;
-                break;
-            }
-            if let Some(version) = self.latest_value_version(next, version)?
-                && let Some(value) = self.value(next, version)?
+            if let Some(found) = self.latest_value_version(next, version)?
+                && let Some(value) = self.value(next, found)?
             {
+                if bytes >= max_bytes {
+                    done = false;
+                    break;
+                }
                 bytes += 32 + value.len();
                 leaves.push((next.0, value));
             }
@@ -794,6 +794,7 @@ impl Store {
         if version == 0 {
             return Err(err("nothing to restore at genesis"));
         }
+        self.clear_unfinished_restore()?;
         let sink = Arc::new(Sink {
             db: self.db.clone(),
         });
@@ -804,6 +805,33 @@ impl Store {
             version,
             root,
         })
+    }
+
+    /// A restore that failed leaves its nodes and values behind, and a later one would read them.
+    /// A fresh chain holds nothing past genesis, so whatever is at a later version goes.
+    fn clear_unfinished_restore(&self) -> Result<(), Error> {
+        const BATCH: usize = 10_000;
+        let mut batch = WriteBatch::default();
+        for item in self.db.iterator_cf(self.cf(CF_NODES), IteratorMode::Start) {
+            let (key, _) = item.map_err(err)?;
+            let node: NodeKey = borsh::from_slice(&key).map_err(err)?;
+            if node.version() != 0 {
+                batch.delete_cf(self.cf(CF_NODES), key);
+            }
+            if batch.len() >= BATCH {
+                self.write(std::mem::take(&mut batch))?;
+            }
+        }
+        for item in self.db.iterator_cf(self.cf(CF_VALUES), IteratorMode::Start) {
+            let (key, _) = item.map_err(err)?;
+            if key[32..] != 0u64.to_be_bytes() {
+                batch.delete_cf(self.cf(CF_VALUES), key);
+            }
+            if batch.len() >= BATCH {
+                self.write(std::mem::take(&mut batch))?;
+            }
+        }
+        self.write(batch)
     }
 
     /// Makes the restored state the chain's head, with its block and metadata, in one write.

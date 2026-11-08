@@ -14,7 +14,7 @@ use qubits_types::limits::{
 use qubits_types::{
     Account, Address, Amount, AssetId, ChainParams, Contract, DelayedAction, Genesis, Hash,
     Payload, PendingAction, Receipt, Role, SignatureCache, SignedTransaction, ValidatorSet,
-    contract_address, governance_address,
+    VaultPolicy, contract_address, governance_address,
 };
 
 mod rewards;
@@ -121,8 +121,14 @@ pub enum TxError {
         unlock_at_ms: u64,
     },
     TooManyPending,
+    /// A vault with a recovery policy keeps this much native token for recovery to pay with.
+    RecoveryReserve {
+        reserve: Amount,
+    },
     /// Too much gas for this block; the transaction may fit in the next one.
     BlockGasFull,
+    /// The validator set already changes in this block; the transaction may fit in a later one.
+    ValidatorsChanging,
     GasTooHigh,
     NotAContract,
     NotCallable,
@@ -181,7 +187,14 @@ impl fmt::Display for TxError {
             TxError::TooManyPending => {
                 write!(f, "vault already has {MAX_PENDING_ACTIONS} pending actions")
             }
+            TxError::RecoveryReserve { reserve } => write!(
+                f,
+                "a vault with a recovery policy keeps {reserve} for its recovery fee"
+            ),
             TxError::BlockGasFull => write!(f, "no gas left in this block"),
+            TxError::ValidatorsChanging => {
+                write!(f, "the validator set already changes in this block")
+            }
             TxError::GasTooHigh => write!(f, "gas limit is above {MAX_TX_GAS}"),
             TxError::NotAContract => write!(f, "no contract at that address"),
             TxError::NotCallable => write!(f, "init runs once, at deployment"),
@@ -299,6 +312,20 @@ pub fn read_validators(state: &impl StateReader) -> Result<ValidatorSet, TxError
 
 pub fn min_fee(params: &ChainParams, size: usize) -> Amount {
     required_fee(params.min_fee_per_byte, size, 0)
+}
+
+/// The fee of the largest transaction there can be. A vault with a recovery policy can't spend
+/// below it on the owner's word, so recovery can always pay, even after a stolen key has burned
+/// the rest in fees.
+pub fn recovery_reserve(params: &ChainParams) -> Amount {
+    min_fee(params, MAX_TX_BYTES)
+}
+
+fn reserve_of(params: &ChainParams, vault: Option<&VaultPolicy>) -> Amount {
+    match vault {
+        Some(v) if v.recovery.is_some() => recovery_reserve(params),
+        _ => 0,
+    }
 }
 
 /// What is left of a transaction's gas, back in the native token. Rounds down, so never more
@@ -732,6 +759,13 @@ impl<S: StateReader> Staged<'_, '_, S> {
                 available,
             });
         }
+        let reserve = match tx.role {
+            Role::Owner => reserve_of(&env.params, account.vault.as_ref()),
+            Role::Recovery => 0,
+        };
+        if available - tx.fee < reserve {
+            return Err(TxError::RecoveryReserve { reserve });
+        }
         let owner_policy = match (&account.auth, &stx.reveal) {
             (Some(auth), None) => auth.clone(),
             (Some(_), Some(_)) => return Err(TxError::RevealNotAllowed),
@@ -794,6 +828,9 @@ impl<S: StateReader> Staged<'_, '_, S> {
 
         match &tx.payload {
             Payload::SetValidators { validators } => {
+                if self.executor.validators.is_some() {
+                    return Err(TxError::ValidatorsChanging);
+                }
                 let current = self.executor.validator_set()?;
                 let next = ValidatorSet {
                     epoch: current.epoch + 1,
@@ -842,6 +879,9 @@ impl<S: StateReader> Staged<'_, '_, S> {
                         available,
                     });
                 }
+                if available - *amount < reserve {
+                    return Err(TxError::RecoveryReserve { reserve });
+                }
                 match delay {
                     Some(delay_ms) => {
                         let action = DelayedAction::Call {
@@ -878,6 +918,9 @@ impl<S: StateReader> Staged<'_, '_, S> {
                                 available,
                             });
                         }
+                        if *asset == AssetId::NATIVE && available - *amount < reserve {
+                            return Err(TxError::RecoveryReserve { reserve });
+                        }
                         let action = DelayedAction::Transfer {
                             to: *to,
                             asset: *asset,
@@ -898,7 +941,14 @@ impl<S: StateReader> Staged<'_, '_, S> {
                     Some(delay_ms) => {
                         self.queue(&sender, now, delay_ms, DelayedAction::SetAuth(auth.clone()))?
                     }
-                    None => self.get(&sender)?.expect("sender loaded").auth = Some(auth.clone()),
+                    None => {
+                        let account = self.get(&sender)?.expect("sender loaded");
+                        account.auth = Some(auth.clone());
+                        // every action in the queue was signed by an owner key recovery replaces
+                        if tx.role == Role::Recovery {
+                            account.pending.clear();
+                        }
+                    }
                 }
             }
             Payload::SetVault { vault: new_vault } => {
@@ -913,7 +963,14 @@ impl<S: StateReader> Staged<'_, '_, S> {
                         delay_ms,
                         DelayedAction::SetVault(new_vault.clone()),
                     )?,
-                    None => self.get(&sender)?.expect("sender loaded").vault = new_vault.clone(),
+                    None => {
+                        let account = self.get(&sender)?.expect("sender loaded");
+                        let reserve = reserve_of(&env.params, new_vault.as_ref());
+                        if account.balance(AssetId::NATIVE) < reserve {
+                            return Err(TxError::RecoveryReserve { reserve });
+                        }
+                        account.vault = new_vault.clone();
+                    }
                 }
             }
             Payload::CancelPending { id } => {
@@ -942,8 +999,18 @@ impl<S: StateReader> Staged<'_, '_, S> {
                     });
                 }
                 let PendingAction { action, .. } = target_account.pending.remove(position);
+                let reserve = reserve_of(&env.params, target_account.vault.as_ref());
+                let spendable = target_account
+                    .balance(AssetId::NATIVE)
+                    .saturating_sub(reserve);
                 match action {
                     DelayedAction::Transfer { to, asset, amount } => {
+                        if asset == AssetId::NATIVE
+                            && amount <= target_account.balance(AssetId::NATIVE)
+                            && amount > spendable
+                        {
+                            return Err(TxError::RecoveryReserve { reserve });
+                        }
                         self.debit(target, asset, amount)?;
                         self.credit(&to, asset, amount)?;
                     }
@@ -962,10 +1029,14 @@ impl<S: StateReader> Staged<'_, '_, S> {
                         gas_limit,
                     } if self.executor.run_contracts => {
                         self.reserve_gas(gas_limit)?;
-                        let (receipt, _) = contracts::call(
-                            self, target, &contract, &function, &args, amount, gas_limit,
-                        )?;
-                        self.receipt = receipt;
+                        self.receipt = if amount > spendable {
+                            contracts::refused("insufficient balance", gas_limit)
+                        } else {
+                            contracts::call(
+                                self, target, &contract, &function, &args, amount, gas_limit,
+                            )?
+                            .0
+                        };
                     }
                     DelayedAction::Call { .. } => {}
                 }

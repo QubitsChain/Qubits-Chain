@@ -392,8 +392,8 @@ impl ChainApp {
                 }
                 Err(TxError::Storage(e)) => return Err(format!("storage: {e}")),
                 Err(e) if strict => return Err(format!("transaction {} fails: {e}", tx.id())),
-                // it stays in the mempool for the next block
-                Err(TxError::BlockGasFull) => {}
+                // it stays in the mempool for a later block
+                Err(TxError::BlockGasFull | TxError::ValidatorsChanging) => {}
                 Err(_) => failed.push(tx.id()),
             }
         }

@@ -224,6 +224,18 @@ fn run_for<'r, 'e, 'a, S: StateReader>(staged: &'r mut Staged<'e, 'a, S>) -> Run
     }
 }
 
+/// The receipt of a call that never started: nothing ran and no gas was used.
+pub(crate) fn refused(reason: &str, gas: u64) -> Receipt {
+    let finish = reverted(reason, gas);
+    Receipt {
+        gas_used: 0,
+        contract: None,
+        outcome: finish.outcome,
+        output: finish.output,
+        events: Vec::new(),
+    }
+}
+
 /// The receipt, and the gas left.
 pub(crate) fn call<S: StateReader>(
     staged: &mut Staged<'_, '_, S>,

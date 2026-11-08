@@ -1,4 +1,4 @@
-use std::io::Read;
+use std::io::{Read, Write};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -810,4 +810,53 @@ fn era_files_carry_history_between_nodes() {
         d.block(2 * ERA + 5).unwrap().is_none(),
         "nothing left behind"
     );
+}
+
+/// Answers `/v1/status` with `status`, and anything else with an error.
+fn liar(status: String) -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut request = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => request.extend_from_slice(&buf[..n]),
+                }
+            }
+            let (code, body) = if request.starts_with(b"GET /v1/status ") {
+                ("200 OK", status.as_str())
+            } else {
+                ("500 Internal Server Error", "")
+            };
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {code}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+                 Connection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    url
+}
+
+#[test]
+fn a_source_claiming_blocks_it_cannot_serve_costs_one_pass() {
+    let g = genesis();
+    let (_dir, node) = api_node(&g);
+    let mut status: serde_json::Value = get(&format!("{}/v1/status", serve(node.clone())));
+    status["height"] = serde_json::json!(1_000_000);
+    let mut follower = Follower::new(node.clone(), vec![liar(status.to_string())]).unwrap();
+
+    let started = Instant::now();
+    assert!(follower.keep_pace(2, Duration::from_secs(300)).is_err());
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(node.head().unwrap().height, 0);
 }

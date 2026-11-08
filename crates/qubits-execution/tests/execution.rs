@@ -1,6 +1,7 @@
 use qubits_crypto::{SchemeId, SecretKey};
 use qubits_execution::{
-    BlockEnv, BlockError, TxError, execute_block, genesis_writes, min_fee, read_account,
+    BlockEnv, BlockError, Executor, TxError, execute_block, genesis_writes, min_fee, read_account,
+    recovery_reserve,
 };
 use qubits_state::MemoryState;
 use qubits_types::limits::MAX_PENDING_ACTIONS;
@@ -1143,4 +1144,164 @@ fn signatures_are_skipped_only_when_asked() {
     ));
     let mut trusting = qubits_execution::Executor::new(&chain.state, chain.env());
     trusting.apply_verified(&tampered).unwrap();
+}
+
+#[test]
+fn recovery_replacing_the_owner_clears_the_queue() {
+    let mut s = vault_setup();
+    let mut thief = s.vault.clone();
+    let thief_dest = Wallet::new(key(66));
+    s.chain.send(&mut thief, pay(&thief_dest, 1_000)).unwrap();
+    s.chain
+        .send(
+            &mut thief,
+            Payload::SetAuth {
+                auth: single(&key(67)),
+            },
+        )
+        .unwrap();
+    s.chain
+        .send(&mut thief, Payload::SetVault { vault: None })
+        .unwrap();
+    assert_eq!(s.pending().len(), 3);
+
+    let fresh = key(77);
+    let rotate = s.recovery_tx(Payload::SetAuth {
+        auth: single(&fresh),
+    });
+    s.chain.submit(rotate).unwrap();
+    assert!(s.pending().is_empty());
+
+    s.chain.advance(DELAY);
+    for id in 0..3 {
+        let exec = s.chain.tx(
+            &s.relayer,
+            Payload::ExecutePending {
+                account: s.vault.address,
+                id,
+            },
+        );
+        assert_eq!(s.chain.submit(exec), Err(TxError::PendingNotFound));
+    }
+    let account = s.chain.account(&s.vault.address);
+    assert_eq!(account.auth, Some(single(&fresh)));
+    assert!(account.vault.is_some());
+    assert_eq!(s.chain.balance(&thief_dest), 0);
+}
+
+#[test]
+fn a_vault_with_recovery_keeps_its_recovery_fee() {
+    let reserve = recovery_reserve(&params());
+    let recovery_key = slh_key(50);
+    let policy = VaultPolicy {
+        delay_ms: DELAY,
+        recovery: Some(single(&recovery_key)),
+    };
+    let set_vault = Payload::SetVault {
+        vault: Some(policy.clone()),
+    };
+
+    let poor = Wallet::new(key(4));
+    let mut chain = Chain::new(&[(&poor, reserve)]);
+    let stx = chain.tx(&poor, set_vault.clone());
+    assert_eq!(chain.submit(stx), Err(TxError::RecoveryReserve { reserve }));
+
+    let mut no_recovery = Wallet::new(key(5));
+    let mut chain = Chain::new(&[(&no_recovery, 100_000)]);
+    let only_delay = VaultPolicy {
+        delay_ms: DELAY,
+        recovery: None,
+    };
+    chain
+        .send(
+            &mut no_recovery,
+            Payload::SetVault {
+                vault: Some(only_delay),
+            },
+        )
+        .unwrap();
+
+    let mut vault = Wallet::new(key(1));
+    let bob = Wallet::new(key(2));
+    let mut relayer = Wallet::new(key(3));
+    let mut chain = Chain::new(&[(&vault, reserve + 1_000_000), (&relayer, 10_000_000)]);
+    chain.send(&mut vault, set_vault).unwrap();
+
+    let probe = chain.tx(&vault, pay(&bob, 0));
+    let most = chain.balance(&vault) - fee_of(&probe) - reserve;
+    let stx = chain.tx(&vault, pay(&bob, most + 1));
+    assert_eq!(chain.submit(stx), Err(TxError::RecoveryReserve { reserve }));
+    chain.send(&mut vault, pay(&bob, most)).unwrap();
+
+    chain.advance(DELAY);
+    chain
+        .send(
+            &mut relayer,
+            Payload::ExecutePending {
+                account: vault.address,
+                id: 0,
+            },
+        )
+        .unwrap();
+    assert_eq!(chain.balance(&bob), most);
+    assert_eq!(chain.balance(&vault), reserve);
+
+    let stx = chain.tx(&vault, pay(&bob, 1));
+    assert_eq!(chain.submit(stx), Err(TxError::RecoveryReserve { reserve }));
+
+    let fresh = key(77);
+    let rotate = chain.tx_with(
+        &vault,
+        Role::Recovery,
+        &single(&recovery_key),
+        &[&recovery_key],
+        Payload::SetAuth {
+            auth: single(&fresh),
+        },
+    );
+    chain.submit(rotate).unwrap();
+    assert_eq!(chain.account(&vault.address).auth, Some(single(&fresh)));
+    assert!(chain.balance(&vault) < reserve);
+}
+
+#[test]
+fn the_validator_set_changes_once_a_block() {
+    let validators: Vec<_> = (0..4).map(validator).collect();
+    let mut chain = Chain::with_validators(&[], validators.clone(), 10_000_000);
+    let next: Vec<_> = (5..9).map(validator).collect();
+    let gov = council(validators.clone(), &chain);
+    let first = chain.tx_with(
+        &gov,
+        Role::Owner,
+        &gov.policy,
+        &[&validators[0], &validators[1], &validators[2]],
+        set_validators(&next),
+    );
+    let installed = ValidatorSet {
+        epoch: 1,
+        validators: next.iter().map(seat).collect(),
+    }
+    .council();
+    let mut tx = first.tx.clone();
+    tx.nonce += 1;
+    tx.payload = set_validators(&validators);
+    let second =
+        SignedTransaction::sign(tx, &installed, None, &[&next[0], &next[1], &next[2]]).unwrap();
+
+    let mut executor = Executor::new(&chain.state, chain.env());
+    executor.apply(&first).unwrap();
+    assert_eq!(executor.apply(&second), Err(TxError::ValidatorsChanging));
+    assert!(matches!(
+        chain.block(&[first.clone(), second.clone()]),
+        Err(BlockError::Transaction {
+            index: 1,
+            error: TxError::ValidatorsChanging,
+            ..
+        })
+    ));
+
+    chain.block(&[first]).unwrap();
+    chain.submit(second).unwrap();
+    let after = qubits_execution::read_validators(&chain.state).unwrap();
+    assert_eq!(after.epoch, 2);
 }
