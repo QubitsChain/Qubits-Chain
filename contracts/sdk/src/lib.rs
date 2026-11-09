@@ -40,6 +40,13 @@ mod sys {
             args_len: u32,
             value: *const u8,
         ) -> u32;
+        pub fn create(
+            code: *const u8,
+            args: *const u8,
+            args_len: u32,
+            value: *const u8,
+            out: *mut u8,
+        ) -> u32;
         pub fn result_size() -> u32;
         pub fn result(ptr: *mut u8);
         pub fn hash(ptr: *const u8, len: u32, out: *mut u8);
@@ -255,6 +262,26 @@ pub fn call(
     let mut output = vec![0; unsafe { sys::result_size() } as usize];
     unsafe { sys::result(output.as_mut_ptr()) };
     Ok(output)
+}
+
+/// A new contract running `code`, the hash of code already on chain, with this contract as its
+/// deployer: its `init` gets `args` and `value`. If `init` fails, nothing of it stays.
+pub fn create(code: &[u8; 32], args: &[u8], value: u128) -> Result<Address, CallFailed> {
+    let value = value.to_le_bytes();
+    let mut address = NOBODY;
+    let failed = unsafe {
+        sys::create(
+            code.as_ptr(),
+            args.as_ptr(),
+            args.len() as u32,
+            value.as_ptr(),
+            address.as_mut_ptr(),
+        )
+    };
+    if failed != 0 {
+        return Err(CallFailed);
+    }
+    Ok(address)
 }
 
 pub fn hash(data: &[u8]) -> [u8; 32] {

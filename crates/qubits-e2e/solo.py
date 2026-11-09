@@ -12,7 +12,7 @@ exec(compile(src, 'e2e.py', 'exec'), g)
 WORK, RPC, NODE, Proc, tool, http, post_tx, up, height, wait, metric, status, balance, keys, pub, new_key, cli, check, log = [g[k] for k in
     ('WORK', 'RPC', 'NODE', 'Proc', 'tool', 'http', 'post_tx', 'up', 'height', 'wait', 'metric', 'status', 'balance', 'keys', 'pub', 'new_key', 'cli', 'check', 'log')]
 open(f"{WORK}/pw", "w").write(g['PASSWORD'] + "\n")
-for name in ("v0", "alice", "sink"):
+for name in ("v0", "alice", "sink", "fees"):
     new_key(name)
 load = tool("addrs", 110)
 governance = tool("governance")[0]
@@ -26,7 +26,7 @@ g['nodes']["v0"] = Proc("v0", RPC, ["--validator-key", "v0.json", *g['PW']]).sta
 check("single validator up", up(RPC))
 # a token contract, deployed through governance
 token_wasm = os.path.abspath(f"{HERE}/../../contracts/out/token.wasm")
-cli("contract", "deploy", token_wasm, "--arg", keys["alice"], "--arg", "1000000", "--arg", '"Solo Dollar"', "--arg", '"SOLO"', "--arg", "u64:6", "--out", "token.json")
+cli("contract", "deploy", token_wasm, "--arg", keys["alice"], "--arg", "1000000", "--arg", '"Solo Token"', "--arg", '"SOLO"', "--arg", "u64:6", "--out", "token.json")
 cli("tx", "sign", "--file", "token.json", "--key", "v0.json", *g['PW'])
 deployed = cli("tx", "submit", "--file", "token.json", "--wait")[1]
 token = next(l.split()[1] for l in deployed.splitlines() if l.startswith("contract "))
@@ -41,7 +41,8 @@ code, refused = cli("contract", "call", f"{token}.transfer({keys['sink']}, 99999
 check("a revert is reported and included", code != 0 and "reverted: balance too low" in refused, refused)
 # an AMM pool against the native token, and a trade
 amm_wasm = os.path.abspath(f"{HERE}/../../contracts/out/amm.wasm")
-cli("contract", "deploy", amm_wasm, "--out", "amm.json")
+token_code = http(RPC, f"/v1/contracts/{token}")[1]["code"]
+cli("contract", "deploy", amm_wasm, "--arg", keys["fees"], "--arg", f"0x{token_code}", "--out", "amm.json")
 cli("tx", "sign", "--file", "amm.json", "--key", "v0.json", *g['PW'])
 amm = next(l.split()[1] for l in cli("tx", "submit", "--file", "amm.json", "--wait")[1].splitlines() if l.startswith("contract "))
 cli("contract", "call", f"{token}.approve({amm}, 100000)", "--key", "alice.json", *g['PW'], "--wait")
@@ -51,6 +52,16 @@ def pool(port=RPC):
 check("a pool opened", pool() == "100000 400000 200000", pool())
 traded = cli("contract", "call", f"{amm}.swap(native, {token}, 40000, 8000, deadline:600)", "--amount", "40000", "--key", "alice.json", *g['PW'], "--wait")[1]
 check("a swap went through the market and the token", pool() == "90934 440000 200000" and "event swap" in traded, pool())
+# a token made inside the market, its whole supply against virtual liquidity, with a first buy
+supply = 10**24
+cli("contract", "call", f'{amm}.create("Launched", "LNCH", 500)', "--amount", "1000000000", "--key", "alice.json", *g['PW'], "--wait")
+coin = http(RPC, "/v1/contracts")[1]["contracts"][-1]
+paid = 10**9 - 10**6 - 25 * 10**5
+bought = supply * paid // (500 * 10**18 + paid)
+def launched():
+    return cli("contract", "view", f"{amm}.pool(native, {coin})", "--as", "u128s")[1].strip()
+check("a token made by the market, bought in the same call", launched() == f"{paid} {supply - bought} 0" and cli("contract", "view", f"{coin}.balance_of({keys['alice']})", "--as", "u128")[1].strip() == str(bought), launched())
+check("and the protocol paid at once", balance(keys["fees"]) == 10**6, str(balance(keys["fees"])))
 h0 = height()
 t0 = time.time()
 sender_groups = g['load_transactions'](0, 50, 40, keys["sink"])
@@ -71,7 +82,7 @@ check("api node up", up(RPC + 10))
 check("api node joined from a snapshot", wait(lambda: height(RPC + 10) >= height(), 60) and metric("qubits_snapshot_syncs_total", RPC + 10) == 1)
 check("same state", balance(keys["sink"], RPC + 10) == 2000)
 check("contract state came with the snapshot", held(keys["sink"], RPC + 10) == "2500" and pool(RPC + 10) == pool())
-check("and so did the list of contracts", http(RPC + 10, "/v1/contracts")[1]["contracts"] == [token, amm])
+check("and so did the list of contracts", http(RPC + 10, "/v1/contracts")[1]["contracts"] == [token, amm, coin])
 offered = http(RPC, "/v1/eras")[1]
 check("validator offers eras", len(offered["eras"]) >= 1, offered)
 files = [l for l in g['cli_node']("era", "fetch", "--from", f"http://127.0.0.1:{RPC}", "--out", "eras") if ".era" in l]

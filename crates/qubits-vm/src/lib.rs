@@ -11,7 +11,7 @@ use std::fmt;
 use std::sync::OnceLock;
 
 use qubits_types::limits::MAX_ARGS_BYTES;
-use qubits_types::{Address, Amount, Outcome};
+use qubits_types::{Address, Amount, Hash, Outcome};
 use wasmi::{
     CompilationMode, Config, Engine, Error, Module, Store, StoreLimits, StoreLimitsBuilder,
     TrapCode,
@@ -36,6 +36,9 @@ pub mod gas {
     /// Per byte written to state.
     pub const STATE_BYTE: u64 = 64;
     pub const TRANSFER: u64 = 20_000;
+    /// Starting a contract from code already on chain, before its `init` runs: four reads,
+    /// four writes and 80 bytes of state.
+    pub const CREATE: u64 = CALL + 4 * READ + 4 * WRITE + 80 * STATE_BYTE;
     pub const EVENT: u64 = 500;
     pub const EVENT_BYTE: u64 = 8;
     pub const HASH: u64 = 500;
@@ -76,6 +79,12 @@ pub struct Called {
     pub gas_left: u64,
 }
 
+/// What came of a contract starting another. A failed one has already been undone.
+pub struct Created {
+    pub address: Option<Address>,
+    pub gas_left: u64,
+}
+
 /// The chain as a contract sees it. `qubits-execution` implements this, with undo.
 pub trait Host {
     fn height(&self) -> u64;
@@ -95,6 +104,16 @@ pub trait Host {
         value: Amount,
         gas: u64,
     ) -> Result<Called, Fatal>;
+    /// A new contract running `code`, which must already be on chain, with `creator` as its
+    /// deployer.
+    fn create(
+        &mut self,
+        creator: &Address,
+        code: &Hash,
+        args: &[u8],
+        value: Amount,
+        gas: u64,
+    ) -> Result<Created, Fatal>;
 }
 
 pub struct Invocation<'a> {

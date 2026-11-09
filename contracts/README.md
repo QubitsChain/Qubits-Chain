@@ -1,13 +1,13 @@
 # Contracts
 
-The contracts the chain runs. For now only the governance account can deploy, so a contract runs only once a quorum of validators has signed its deployment.
+The contracts the chain runs. For now only the governance account can deploy, so new code runs only once a quorum of validators has signed its deployment. A running contract can start others from code already on chain.
 
 | | |
 |---|---|
 | `sdk/` | what contracts are written with: `qubits-contract-sdk`, `no_std`, no dependencies |
 | `math/` | what prices need and `u128` can't hold: 256-bit products, exact division, roots |
 | `token/` | a fungible token with a name, a symbol, decimals and an owner who mints |
-| `amm/` | a constant product market: every pool in one contract, 0.30% to liquidity providers |
+| `amm/` | a constant product market: every pool in one contract, 0.30% to liquidity providers, and `create`, which makes a token and puts its whole supply against virtual liquidity |
 | `escrow/` | settlement between two parties, in the native token or a token |
 | `out/` | the built contracts, which tests and deployments use |
 
@@ -48,7 +48,7 @@ The block time is agreed on to within seconds. Don't build on seconds.
 
 ```sh
 qubits contract deploy contracts/out/token.wasm --arg qb1owner… --arg 1000000000000 \
-    --arg '"Qubits Dollar"' --arg '"qUSD"' --arg u64:6 --out token.json
+    --arg '"Example Token"' --arg '"EXT"' --arg u64:6 --out token.json
 qubits tx sign --file token.json --key validator.json --password-file pw   # each validator, up to a quorum
 qubits tx submit --file token.json --wait                                  # prints the contract's address
 
@@ -75,6 +75,14 @@ qubits contract view 'qb1amm….pool(qb1token…, native)' --as u128s    # reser
 
 `8900` there is the least you accept. Set it from `quote`, a little lower: without it anyone can trade just before you and take the difference. Removing liquidity is `remove_liquidity(a, b, shares, min_a, min_b, deadline)`.
 
+The AMM is deployed after `token.wasm` is on chain, with the address that gets the protocol's share and the token code's hash (the `code` of `qubits contract show qb1token…`): `--arg qb1protocol… --arg 0x<hash>`. Anyone can then make a token of 1,000,000 (18 decimals, minting ended) whose whole supply trades against 100, 250, 500 or 1000 virtual native tokens. Native tokens sent along buy some in the same call. Its liquidity stays in for good, and every trade pays 0.10% to the protocol and 0.25% to the launcher, in native tokens, in the same call.
+
+```sh
+qubits contract call 'qb1amm….create("Quantum Cat", "QCAT", 500)' --amount 10000000000000000000 \
+    --key you.json --password-file pw --wait          # gives the token's address and what 10 bought
+qubits contract view 'qb1amm….launched(qb1coin…)'     # the virtual amount and the launcher
+```
+
 Amounts are base units: the native token has 18 decimals, a token as many as it says. Gas is paid in the fee, as `min_fee_per_byte × (size + gas_limit / 16)`, and what isn't used comes back. A vault's call pays when it is queued and gets nothing back.
 
 ## The contract interface
@@ -94,6 +102,7 @@ These are the imports of the `qubits` module, which the SDK wraps. Addresses are
 | `transfer(to, amount) -> i32` | from this contract's balance; 0 if it went |
 | `emit(topic, len, data, len)` | an event, in the receipt; topics up to 64 bytes, data up to 4 KiB |
 | `call(to, name, len, args, len, value) -> i32` | another contract with all the gas left; 0 if it finished |
+| `create(code, args, len, value, out) -> i32` | a new contract running code already on chain, its `init` given `args`, `value` and all the gas left; 0 and the address at `out` if `init` finished |
 | `result_size() -> i32`, `result(ptr)` | what that call gave back |
 | `hash(ptr, len, out)` | BLAKE3, 32 bytes |
 | `verify(scheme, key, len, msg, len, sig, len) -> i32` | a signature from `qubits sign`; scheme 1 is ML-DSA-65, 2 SLH-DSA-SHA2-192s; 0 if good |

@@ -44,9 +44,22 @@ pub mod keys {
         key
     }
 
-    /// Every contract, in the order they were deployed.
+    /// How many contracts there are, a `u64`. Each is under `contract_at`, in the order made.
     pub fn contracts() -> Vec<u8> {
         b"contracts".to_vec()
+    }
+
+    pub fn contract_at(index: u64) -> Vec<u8> {
+        let mut key = b"contracts/".to_vec();
+        key.extend_from_slice(&index.to_be_bytes());
+        key
+    }
+
+    /// How many contracts a contract has started, a `u64`: the next one's address comes from it.
+    pub fn created(creator: &Address) -> Vec<u8> {
+        let mut key = b"created/".to_vec();
+        key.extend_from_slice(creator.as_bytes());
+        key
     }
 
     pub fn contract(address: &Address) -> Vec<u8> {
@@ -293,14 +306,33 @@ pub fn genesis_writes(genesis: &Genesis) -> WriteSet {
     writes
 }
 
-/// Every deployed contract. It is in state, and not an index beside it, so a node that joined
-/// from a snapshot knows them too. Only governance deploys, which keeps it short: if that ever
-/// opens up, wallets will need something better than asking each contract.
+/// Every contract, in the order made. It is in state, and not an index beside it, so a node that
+/// joined from a snapshot knows them too.
 pub fn read_contracts(state: &impl StateReader) -> Result<Vec<Address>, TxError> {
-    let Some(bytes) = state.get(&keys::contracts())? else {
-        return Ok(Vec::new());
-    };
-    borsh::from_slice(&bytes).map_err(|e| TxError::Storage(format!("corrupt contract list: {e}")))
+    let count = counter(state.get(&keys::contracts())?)?;
+    (0..count)
+        .map(|index| {
+            let bytes = state
+                .get(&keys::contract_at(index))?
+                .ok_or_else(|| TxError::Storage(format!("contract {index} missing")))?;
+            let bytes: [u8; 32] = bytes
+                .try_into()
+                .map_err(|_| TxError::Storage(format!("corrupt contract {index}")))?;
+            Ok(Address(bytes))
+        })
+        .collect()
+}
+
+pub(crate) fn counter(stored: Option<Vec<u8>>) -> Result<u64, TxError> {
+    match stored {
+        None => Ok(0),
+        Some(bytes) => {
+            let bytes: [u8; 8] = bytes
+                .try_into()
+                .map_err(|_| TxError::Storage("corrupt counter".into()))?;
+            Ok(u64::from_le_bytes(bytes))
+        }
+    }
 }
 
 pub fn read_validators(state: &impl StateReader) -> Result<ValidatorSet, TxError> {

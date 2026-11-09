@@ -3,10 +3,12 @@
 
 use qubits_state::StateReader;
 use qubits_types::limits::MAX_CALL_DEPTH;
-use qubits_types::{Address, Amount, AssetId, Contract, Event, Hash, Outcome, Receipt, code_hash};
-use qubits_vm::{Called, Fatal, Finish, Host, Invocation, gas};
+use qubits_types::{
+    Address, Amount, AssetId, Contract, Event, Hash, Outcome, Receipt, code_hash, contract_address,
+};
+use qubits_vm::{Called, Created, Fatal, Finish, Host, Invocation, gas};
 
-use crate::{Staged, TxError, keys};
+use crate::{Staged, TxError, counter, keys};
 
 enum Undo {
     Write {
@@ -69,6 +71,19 @@ impl<S: StateReader> Run<'_, '_, '_, S> {
                 }
             }
         }
+    }
+
+    fn count(&self, key: &[u8]) -> Result<u64, TxError> {
+        counter(self.staged.read(key)?)
+    }
+
+    fn add_contract(&mut self, address: &Address, code: Hash) -> Result<(), TxError> {
+        let record = borsh::to_vec(&Contract { code }).expect("encoding cannot fail");
+        self.put(keys::contract(address), Some(record));
+        let index = self.count(&keys::contracts())?;
+        self.put(keys::contract_at(index), Some(address.as_bytes().to_vec()));
+        self.put(keys::contracts(), Some((index + 1).to_le_bytes().to_vec()));
+        Ok(())
     }
 
     fn set_balance(&mut self, address: &Address, amount: Amount) -> Result<(), Fatal> {
@@ -213,6 +228,53 @@ impl<S: StateReader> Host for Run<'_, '_, '_, S> {
             gas_left: finish.gas_left,
         })
     }
+
+    fn create(
+        &mut self,
+        creator: &Address,
+        code: &Hash,
+        args: &[u8],
+        value: Amount,
+        gas: u64,
+    ) -> Result<Created, Fatal> {
+        let failed = |gas_left| Created {
+            address: None,
+            gas_left,
+        };
+        if self
+            .staged
+            .read(&keys::code(code))
+            .map_err(fatal)?
+            .is_none()
+        {
+            return Ok(failed(gas));
+        }
+        let (mark, events) = (self.undo.len(), self.events.len());
+        let made = self.count(&keys::created(creator)).map_err(fatal)?;
+        let address = contract_address(creator, made);
+        if self
+            .staged
+            .read(&keys::contract(&address))
+            .map_err(fatal)?
+            .is_some()
+        {
+            return Ok(failed(gas));
+        }
+        self.put(
+            keys::created(creator),
+            Some((made + 1).to_le_bytes().to_vec()),
+        );
+        self.add_contract(&address, *code).map_err(fatal)?;
+        let finish = self.enter(creator, &address, "init", args, value, gas)?;
+        if finish.outcome != Outcome::Done {
+            self.rollback(mark, events);
+            return Ok(failed(finish.gas_left));
+        }
+        Ok(Created {
+            address: Some(address),
+            gas_left: finish.gas_left,
+        })
+    }
 }
 
 fn run_for<'r, 'e, 'a, S: StateReader>(staged: &'r mut Staged<'e, 'a, S>) -> Run<'r, 'e, 'a, S> {
@@ -268,17 +330,8 @@ pub(crate) fn deploy<S: StateReader>(
         return Ok(run.receipt(finish, gas_limit, None));
     };
     let hash: Hash = code_hash(code);
-    let record = borsh::to_vec(&Contract { code: hash }).expect("encoding cannot fail");
     run.put(keys::code(&hash), Some(code.to_vec()));
-    run.put(keys::contract(address), Some(record));
-    let mut all: Vec<Address> = match run.staged.read(&keys::contracts())? {
-        Some(bytes) => borsh::from_slice(&bytes)
-            .map_err(|e| TxError::Storage(format!("corrupt contract list: {e}")))?,
-        None => Vec::new(),
-    };
-    all.push(*address);
-    let list = borsh::to_vec(&all).expect("encoding cannot fail");
-    run.put(keys::contracts(), Some(list));
+    run.add_contract(address, hash)?;
     let finish = run
         .enter(deployer, address, "init", args, 0, gas)
         .map_err(|e| TxError::Storage(e.0))?;

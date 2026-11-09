@@ -41,12 +41,16 @@ pub fn params() -> ChainParams {
 
 impl Chain {
     pub fn new(funded: &[&SecretKey]) -> Chain {
+        Chain::funded(funded, 1_000_000_000)
+    }
+
+    pub fn funded(funded: &[&SecretKey], balance: Amount) -> Chain {
         let validator = key(200);
         let mut accounts: Vec<GenesisAccount> = funded
             .iter()
             .map(|sk| GenesisAccount {
                 address: address(sk),
-                balance: 1_000_000_000,
+                balance,
             })
             .collect();
         accounts.push(GenesisAccount {

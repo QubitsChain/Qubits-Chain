@@ -4,8 +4,8 @@
 
 use std::collections::BTreeMap;
 
-use qubits_types::{Address, Amount, Outcome, contract_hash};
-use qubits_vm::{Called, Fatal, Finish, Host, Invocation, run};
+use qubits_types::{Address, Amount, Hash, Outcome, contract_hash};
+use qubits_vm::{Called, Created, Fatal, Finish, Host, Invocation, run};
 
 const TOKEN: &[u8] = include_bytes!("../../../contracts/out/token.wasm");
 const AMM: &[u8] = include_bytes!("../../../contracts/out/amm.wasm");
@@ -64,6 +64,20 @@ impl Host for Memory {
             gas_left: gas,
         })
     }
+
+    fn create(
+        &mut self,
+        _: &Address,
+        _: &Hash,
+        _: &[u8],
+        _: Amount,
+        gas: u64,
+    ) -> Result<Created, Fatal> {
+        Ok(Created {
+            address: None,
+            gas_left: gas,
+        })
+    }
 }
 
 const ALICE: Address = Address([1; 32]);
@@ -71,9 +85,9 @@ const BOB: Address = Address([2; 32]);
 const GAS: u64 = 5_000_000;
 const GOLDEN_GAS: [u64; 4] = [252_105, 190_562, 130_597, 130_952];
 const GOLDEN_FINGERPRINT: &str = "bd0b2efd98a3152ecd1fbbd2076b0d21f08c1cac2b360863ee30c5ab07df9a65";
-const GOLDEN_MARKET_GAS: [u64; 2] = [522_451, 385_760];
+const GOLDEN_MARKET_GAS: [u64; 2] = [594_261, 458_052];
 const GOLDEN_MARKET_FINGERPRINT: &str =
-    "9d2b1b32fbe62df47bf533e503c41e13b33a96951ef25c27e028ae3b8fd1ca9c";
+    "9aa79552dc4001a28ca8a9c17669ba1d50f311442b56223e35ed7488b1bb23ba";
 const GOLDEN_WORK: u64 = 290_478;
 const GOLDEN_WRITES: u64 = 317;
 

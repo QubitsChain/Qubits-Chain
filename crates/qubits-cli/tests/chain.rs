@@ -844,7 +844,7 @@ fn a_contract_is_deployed_called_and_read() {
         "--arg",
         "1000",
         "--arg",
-        "\"Test Dollar\"",
+        "\"Test Token\"",
         "--arg",
         "\"TUSD\"",
         "--arg",

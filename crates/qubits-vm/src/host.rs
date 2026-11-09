@@ -2,7 +2,7 @@
 //! doing it, so anything it allocates is bounded by the gas already paid.
 
 use qubits_crypto::{Domain, PublicKey, SchemeId, Signature};
-use qubits_types::{Address, Amount, contract_hash};
+use qubits_types::{Address, Amount, Hash, contract_hash};
 use wasmi::{Caller, Engine, Error, Extern, Linker, Memory};
 
 use crate::{Fatal, Frame, Stop, gas, limits};
@@ -221,6 +221,44 @@ fn call(
     Ok(u32::from(!called.ok))
 }
 
+/// Starts a contract running code already on chain, with this one as its deployer, and runs its
+/// `init` with `args`, `value` and all the gas left. Returns 0 and writes the new address to
+/// `out` if `init` finished, or 1 if it failed or there is no such code, leaving nothing behind.
+fn create(
+    mut ctx: Ctx<'_, '_>,
+    code: u32,
+    args: u32,
+    args_len: u32,
+    value: u32,
+    out: u32,
+) -> Host<u32> {
+    charge(&mut ctx, gas::CREATE)?;
+    let code = load(&mut ctx, code, 32, 32)?;
+    let code = Hash(code.try_into().expect("read 32 bytes"));
+    let args = load(
+        &mut ctx,
+        args,
+        args_len,
+        qubits_types::limits::MAX_ARGS_BYTES,
+    )?;
+    let value = load_amount(&mut ctx, value)?;
+    let gas = ctx.get_fuel()?;
+    let frame = ctx.data_mut();
+    let creator = frame.contract;
+    let created = frame
+        .host
+        .create(&creator, &code, &args, value, gas)
+        .map_err(fatal)?;
+    ctx.set_fuel(created.gas_left)?;
+    match created.address {
+        Some(address) => {
+            store(&mut ctx, out, address.as_bytes())?;
+            Ok(0)
+        }
+        None => Ok(1),
+    }
+}
+
 fn result_size(mut ctx: Ctx<'_, '_>) -> Host<u32> {
     charge(&mut ctx, gas::HOST)?;
     Ok(ctx.data().result.len() as u32)
@@ -298,6 +336,7 @@ pub(crate) fn linker<'h>(engine: &Engine) -> Linker<Frame<'h>> {
         "transfer" => transfer,
         "emit" => emit,
         "call" => call,
+        "create" => create,
         "result_size" => result_size,
         "result" => result,
         "hash" => hash,

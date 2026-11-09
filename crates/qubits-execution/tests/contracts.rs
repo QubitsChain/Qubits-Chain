@@ -91,9 +91,9 @@ fn a_token_says_what_it_is_and_minting_can_end() {
     let (alice, bob) = (key(1), key(2));
     let (a, b) = (address(&alice), address(&bob));
     let mut chain = Chain::new(&[&alice, &bob]);
-    let t = chain.deploy(TOKEN, token_args(&a, 100, "Qubits Dollar", "qUSD"));
-    assert_eq!(chain.view(t, "name", vec![]).output, b"Qubits Dollar");
-    assert_eq!(chain.view(t, "symbol", vec![]).output, b"qUSD");
+    let t = chain.deploy(TOKEN, token_args(&a, 100, "Example Token", "EXT"));
+    assert_eq!(chain.view(t, "name", vec![]).output, b"Example Token");
+    assert_eq!(chain.view(t, "symbol", vec![]).output, b"EXT");
     assert_eq!(chain.view(t, "decimals", vec![]).output, 6u64.to_le_bytes());
 
     let taken = chain
@@ -461,6 +461,83 @@ fn the_chain_knows_every_contract_and_no_failed_one() {
     assert_eq!(receipt.outcome, Outcome::Trapped);
     let escrow = chain.deploy(ESCROW, vec![]);
     assert_eq!(read_contracts(&chain.state).unwrap(), [t, escrow]);
+}
+
+/// Starts a contract from the code hash at the front of its input, sending the 16-byte amount
+/// after it, with the rest as `init` arguments. Gives the new address, or nothing.
+const FACTORY: &str = r#"(module
+  (import "qubits" "input_size" (func $input_size (result i32)))
+  (import "qubits" "input" (func $input (param i32)))
+  (import "qubits" "create" (func $create (param i32 i32 i32 i32 i32) (result i32)))
+  (import "qubits" "output" (func $output (param i32 i32)))
+  (memory (export "memory") 1)
+  (func (export "make")
+    (local $n i32)
+    (local.set $n (call $input_size))
+    (call $input (i32.const 0))
+    (if (i32.eqz (call $create (i32.const 0) (i32.const 48) (i32.sub (local.get $n) (i32.const 48)) (i32.const 32) (i32.const 4096)))
+      (then (call $output (i32.const 4096) (i32.const 32))))))"#;
+
+fn make(code: Hash, value: Amount, args: Vec<u8>) -> Vec<u8> {
+    pack(&[&code.0, &value.to_le_bytes(), &args])
+}
+
+#[test]
+fn a_contract_starts_another_from_code_already_on_chain() {
+    let alice = key(1);
+    let a = address(&alice);
+    let mut chain = Chain::new(&[&alice]);
+    let t = token(&mut chain, &a, 1);
+    let factory = chain.deploy(&wasm(FACTORY), vec![]);
+    let args = token_args(&a, 500, "Made", "MADE");
+    let receipt = chain.done(&alice, factory, "make", make(code_hash(TOKEN), 0, args), 0);
+    let made = Address(receipt.output.try_into().unwrap());
+    assert_eq!(made, contract_address(&factory, 0));
+    assert_eq!(holds(&chain, made, &a), 500);
+    assert_eq!(chain.view(made, "symbol", vec![]).output, b"MADE");
+    assert_eq!(read_contracts(&chain.state).unwrap(), [t, factory, made]);
+
+    let args = token_args(&a, 1, "Next", "NEXT");
+    let receipt = chain.done(&alice, factory, "make", make(code_hash(TOKEN), 7, args), 7);
+    let next = Address(receipt.output.try_into().unwrap());
+    assert_eq!(next, contract_address(&factory, 1));
+    assert_eq!(
+        chain.balance(&next),
+        7,
+        "the value went to the new contract"
+    );
+    assert_eq!(chain.balance(&factory), 0);
+}
+
+#[test]
+fn a_start_that_fails_leaves_nothing() {
+    let alice = key(1);
+    let a = address(&alice);
+    let mut chain = Chain::new(&[&alice]);
+    token(&mut chain, &a, 1);
+    let factory = chain.deploy(&wasm(FACTORY), vec![]);
+    let before = read_contracts(&chain.state).unwrap();
+    let mut too_precise = token_args(&a, 500, "Made", "MADE");
+    let at = too_precise.len() - 8;
+    too_precise[at..].copy_from_slice(&39u64.to_le_bytes());
+    for (code, value, sent, args) in [
+        (Hash([9; 32]), 0, 0, token_args(&a, 500, "Made", "MADE")),
+        (code_hash(TOKEN), 0, 0, too_precise),
+        (code_hash(TOKEN), 5, 4, token_args(&a, 500, "Made", "MADE")),
+    ] {
+        let receipt = chain.done(&alice, factory, "make", make(code, value, args), sent);
+        assert!(receipt.output.is_empty(), "{receipt:?}");
+        assert_eq!(read_contracts(&chain.state).unwrap(), before);
+    }
+    assert_eq!(chain.balance(&factory), 4, "what came with the call stayed");
+    let args = token_args(&a, 500, "Made", "MADE");
+    let receipt = chain.done(&alice, factory, "make", make(code_hash(TOKEN), 0, args), 0);
+    let made = Address(receipt.output.try_into().unwrap());
+    assert_eq!(
+        made,
+        contract_address(&factory, 0),
+        "no address was used up"
+    );
 }
 
 fn vault(chain: &mut Chain, owner: &SecretKey, recovery: &AuthPolicy) {
