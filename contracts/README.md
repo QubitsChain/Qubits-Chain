@@ -9,6 +9,7 @@ The contracts the chain runs. For now only the governance account can deploy, so
 | `token/` | a fungible token with a name, a symbol, decimals and an owner who mints |
 | `amm/` | a constant product market: every pool in one contract, 0.30% to liquidity providers, and `create`, which makes a token and puts its whole supply against virtual liquidity |
 | `escrow/` | settlement between two parties, in the native token or a token |
+| `bridge/` | the Qubits side of the bridge to BITS on Ethereum: coins sent out less a fee, and releases a threshold of attesters agree on, each paid once with its Ethereum transaction kept |
 | `out/` | the built contracts, which tests and deployments use |
 
 ```sh

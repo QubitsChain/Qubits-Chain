@@ -2,7 +2,7 @@
 # hashes are what gets deployed, so this has its own lock file and profile.
 [workspace]
 resolver = "3"
-members = ["sdk", "math", "token", "escrow", "amm"]
+members = ["sdk", "math", "token", "escrow", "amm", "bridge"]
 
 [workspace.package]
 version = "0.1.0"

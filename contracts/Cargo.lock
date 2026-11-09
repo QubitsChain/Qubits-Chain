@@ -11,6 +11,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "qubits-contract-bridge"
+version = "0.1.0"
+dependencies = [
+ "qubits-contract-sdk",
+]
+
+[[package]]
 name = "qubits-contract-escrow"
 version = "0.1.0"
 dependencies = [
