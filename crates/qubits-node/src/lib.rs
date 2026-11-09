@@ -144,6 +144,13 @@ impl Node {
             })?;
             tracing::info!(blocks, "indexed transactions by address");
         }
+        if store.token_index_version()? != Some(index::TOKEN_VERSION) {
+            let blocks = store.rebuild_token_index(index::TOKEN_VERSION, |_, bytes| {
+                let block: ChainBlock = borsh::from_slice(bytes).map_err(|e| e.to_string())?;
+                index::tokens_of_block(&store, &block)
+            })?;
+            tracing::info!(blocks, "indexed tokens by holder");
+        }
         Ok(Node {
             store: Arc::new(store),
             genesis_hash: genesis.hash(),

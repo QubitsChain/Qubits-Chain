@@ -175,6 +175,11 @@ pub(crate) fn write_committed(
         .zip(&executed.receipts)
         .map(|(tx, receipt)| crate::index::addresses(tx, Some(receipt)))
         .collect();
+    let tokens: Vec<(Address, Address)> = executed
+        .receipts
+        .iter()
+        .flat_map(crate::index::tokens)
+        .collect();
     let committed = CommittedBlock {
         height: block.height,
         state_root: block.payload.state_root,
@@ -182,6 +187,7 @@ pub(crate) fn write_committed(
         tx_ids: &tx_ids,
         addresses: &addresses,
         receipts: &kept_receipts,
+        tokens: &tokens,
         meta: &meta,
     };
     store

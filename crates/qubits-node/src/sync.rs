@@ -481,6 +481,7 @@ impl Follower {
             tx_ids: &tx_ids,
             addresses: &addresses,
             receipts: &[],
+            tokens: &[],
             meta: &meta,
         };
         store

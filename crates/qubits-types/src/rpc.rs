@@ -85,10 +85,25 @@ pub struct AccountTransactionsResponse {
     pub blocks_from: u64,
 }
 
-/// Every deployed contract, oldest first.
+/// Contracts, oldest first: all of them, or a page when asked with `limit`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContractsResponse {
     pub contracts: Vec<Address>,
+    /// How many there are in all.
+    #[serde(default)]
+    pub total: u64,
+    /// Pass as `from` for the page after this one; none once the list is done.
+    #[serde(default)]
+    pub next: Option<u64>,
+}
+
+/// The token contracts that have named an address in a `transfer` or `mint`, in address order.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountTokensResponse {
+    pub address: Address,
+    pub tokens: Vec<Address>,
+    /// Pass as `after` for the page after this one; none once the list is done.
+    pub next: Option<Address>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

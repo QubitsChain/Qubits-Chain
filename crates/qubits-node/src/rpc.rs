@@ -5,15 +5,15 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
-use qubits_execution::{TxError, keys, read_account, read_contracts};
+use qubits_execution::{TxError, keys, read_account, read_contracts_page};
 use qubits_state::StateReader;
 use qubits_types::limits::{MAX_ARGS_BYTES, MAX_FUNCTION_NAME, MAX_TX_BYTES};
 use qubits_types::rpc::{
-    AccountProofResponse, AccountResponse, AccountTransactionsResponse, BalanceView, BlockResponse,
-    ContractResponse, ContractsResponse, EpochSummary, EpochsResponse, ErasResponse, ErrorResponse,
-    RawBlockResponse, RewardResponse, RewardsResponse, SnapshotResponse, StatusResponse,
-    SubmitRequest, SubmitResponse, TransactionResponse, TxStatus, ValidatorsResponse, ViewRequest,
-    ViewResponse,
+    AccountProofResponse, AccountResponse, AccountTokensResponse, AccountTransactionsResponse,
+    BalanceView, BlockResponse, ContractResponse, ContractsResponse, EpochSummary, EpochsResponse,
+    ErasResponse, ErrorResponse, RawBlockResponse, RewardResponse, RewardsResponse,
+    SnapshotResponse, StatusResponse, SubmitRequest, SubmitResponse, TransactionResponse, TxStatus,
+    ValidatorsResponse, ViewRequest, ViewResponse,
 };
 use qubits_types::{Address, AssetId, Contract, Genesis, Hash, Receipt, SignedTransaction};
 use tower_http::cors::CorsLayer;
@@ -30,6 +30,9 @@ pub const MAX_HISTORY_PAGE: usize = 100;
 /// A page of history ends early once it has read this much of blocks, since a transaction is
 /// read out of its whole block.
 pub const MAX_HISTORY_READ: usize = 8 * 1024 * 1024;
+pub const TOKENS_PAGE: usize = 100;
+pub const MAX_TOKENS_PAGE: usize = 1_000;
+pub const MAX_CONTRACTS_PAGE: u64 = 1_000;
 
 pub struct ApiError(StatusCode, String);
 
@@ -73,6 +76,7 @@ pub fn router(node: Shared) -> Router {
             "/v1/accounts/{address}/transactions",
             get(account_transactions),
         )
+        .route("/v1/accounts/{address}/tokens", get(account_tokens))
         .route("/v1/blocks/latest", get(latest_block))
         .route("/v1/blocks/{height}", get(block))
         .route("/v1/blocks/{height}/raw", get(raw_block))
@@ -230,6 +234,42 @@ async fn account_transactions(
         transactions,
         next: last.filter(|_| more).map(cursor),
         blocks_from: node.store().blocks_from()?,
+    }))
+}
+
+#[derive(serde::Deserialize)]
+struct TokensQuery {
+    after: Option<String>,
+    limit: Option<String>,
+}
+
+async fn account_tokens(
+    State(node): State<Shared>,
+    Path(address): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<TokensQuery>,
+) -> ApiResult<AccountTokensResponse> {
+    let address: Address = address.parse().map_err(bad_request)?;
+    let after = query
+        .after
+        .as_deref()
+        .map(str::parse::<Address>)
+        .transpose()
+        .map_err(bad_request)?;
+    let limit = match query.limit {
+        Some(text) => text.parse::<usize>().map_err(bad_request)?,
+        None => TOKENS_PAGE,
+    }
+    .clamp(1, MAX_TOKENS_PAGE);
+    let mut tokens = node
+        .store()
+        .holder_tokens(&address, after.as_ref(), limit + 1)?;
+    let more = tokens.len() > limit;
+    tokens.truncate(limit);
+    let next = tokens.last().copied().filter(|_| more);
+    Ok(Json(AccountTokensResponse {
+        address,
+        tokens,
+        next,
     }))
 }
 
@@ -616,9 +656,34 @@ fn receipt(node: &Node, id: &Hash) -> Result<Option<Receipt>, ApiError> {
     Ok(Some(receipt))
 }
 
-async fn contracts(State(node): State<Shared>) -> ApiResult<ContractsResponse> {
-    let contracts = read_contracts(node.store()).map_err(|e| NodeError::Storage(e.to_string()))?;
-    Ok(Json(ContractsResponse { contracts }))
+#[derive(serde::Deserialize)]
+struct ContractsQuery {
+    from: Option<String>,
+    limit: Option<String>,
+}
+
+async fn contracts(
+    State(node): State<Shared>,
+    axum::extract::Query(query): axum::extract::Query<ContractsQuery>,
+) -> ApiResult<ContractsResponse> {
+    let from = match query.from {
+        Some(text) => text.parse::<u64>().map_err(bad_request)?,
+        None => 0,
+    };
+    let limit = query
+        .limit
+        .map(|text| text.parse::<u64>().map(|n| n.clamp(1, MAX_CONTRACTS_PAGE)))
+        .transpose()
+        .map_err(bad_request)?;
+    let (contracts, total) = read_contracts_page(node.store(), from, limit)
+        .map_err(|e| NodeError::Storage(e.to_string()))?;
+    let end = from.min(total) + contracts.len() as u64;
+    let next = (limit.is_some() && end < total).then_some(end);
+    Ok(Json(ContractsResponse {
+        contracts,
+        total,
+        next,
+    }))
 }
 
 async fn contract(

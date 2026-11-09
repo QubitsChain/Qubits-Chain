@@ -5,9 +5,9 @@ use anyhow::{Context, Result, anyhow, bail};
 use qubits_crypto::SecretKey;
 use qubits_types::client::build_transaction;
 use qubits_types::rpc::{
-    AccountResponse, AccountTransactionsResponse, ContractResponse, ErrorResponse, RewardResponse,
-    RewardsResponse, StatusResponse, SubmitRequest, SubmitResponse, TransactionResponse, TxStatus,
-    ValidatorsResponse, ViewRequest,
+    AccountResponse, AccountTokensResponse, AccountTransactionsResponse, ContractResponse,
+    ErrorResponse, RewardResponse, RewardsResponse, StatusResponse, SubmitRequest, SubmitResponse,
+    TransactionResponse, TxStatus, ValidatorsResponse, ViewRequest,
 };
 use qubits_types::{Address, Hash, Payload, Receipt, Role, SignedTransaction};
 use serde::de::DeserializeOwned;
@@ -82,6 +82,28 @@ impl Client {
             if e.to_string().contains("(404)") {
                 anyhow!(
                     "the node at {} keeps no history by address; it needs 0.2.5 or later",
+                    self.base
+                )
+            } else {
+                e
+            }
+        })
+    }
+
+    pub fn account_tokens(
+        &self,
+        address: &Address,
+        limit: usize,
+        after: Option<&Address>,
+    ) -> Result<AccountTokensResponse> {
+        let mut path = format!("/v1/accounts/{address}/tokens?limit={limit}");
+        if let Some(after) = after {
+            path.push_str(&format!("&after={after}"));
+        }
+        self.get(&path).map_err(|e| {
+            if e.to_string().contains("(404)") {
+                anyhow!(
+                    "the node at {} keeps no index of tokens; it needs 0.3.1 or later",
                     self.base
                 )
             } else {

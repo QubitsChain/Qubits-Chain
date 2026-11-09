@@ -55,6 +55,7 @@ fn commit(store: &Store, height: u64, w: &WriteSet, bytes: &[u8], tx_ids: &[Hash
         tx_ids,
         addresses: &[],
         receipts: &[],
+        tokens: &[],
         meta: &[],
     };
     store.commit_block(&block, prepared).unwrap();
@@ -135,6 +136,7 @@ fn mismatched_commits_are_refused() {
         tx_ids: &[],
         addresses: &[],
         receipts: &[],
+        tokens: &[],
         meta: &[],
     };
     assert!(store.commit_block(&wrong_root, prepared).is_err());
@@ -147,6 +149,7 @@ fn mismatched_commits_are_refused() {
         tx_ids: &[],
         addresses: &[],
         receipts: &[],
+        tokens: &[],
         meta: &[],
     };
     assert!(store.commit_block(&wrong_height, prepared).is_err());
@@ -219,6 +222,7 @@ fn metadata_is_written_with_blocks_and_alone() {
         tx_ids: &[],
         addresses: &[],
         receipts: &[],
+        tokens: &[],
         meta: &meta,
     };
     store.commit_block(&block, prepared).unwrap();
@@ -452,6 +456,7 @@ fn a_snapshot_rebuilds_one_version_from_chunks() {
         tx_ids: &[Hash([3; 32])],
         addresses: &[],
         receipts: &[],
+        tokens: &[],
         meta: &[(b"tip", vec![1])],
     };
     fresh.finish_restore(restore, &block).unwrap();
@@ -538,6 +543,7 @@ fn chunks_from_a_lying_source_are_refused() {
                     tx_ids: &[],
                     addresses: &[],
                     receipts: &[],
+                    tokens: &[],
                     meta: &[],
                 },
             )
@@ -587,6 +593,7 @@ fn chunks_from_a_lying_source_are_refused() {
                 tx_ids: &[],
                 addresses: &[],
                 receipts: &[],
+                tokens: &[],
                 meta: &[],
             },
         )
@@ -622,6 +629,7 @@ fn restore_all(
         tx_ids: &[],
         addresses: &[],
         receipts: &[],
+        tokens: &[],
         meta: &[],
     };
     fresh.finish_restore(restore, &block)
@@ -698,6 +706,7 @@ fn old_blocks_are_dropped_with_their_index_and_proofs() {
             tx_ids: &[Hash([h as u8; 32])],
             addresses: &[],
             receipts: &[],
+            tokens: &[],
             meta: &[(b"proof", vec![h as u8])],
         };
         store.commit_block(&block, prepared).unwrap();
@@ -792,6 +801,7 @@ fn commit_named(store: &Store, alice: Address, bob: Address) {
             tx_ids: &[Hash([h as u8; 32]), Hash([h as u8 + 100; 32])],
             addresses: &[vec![alice, bob], vec![alice]],
             receipts: &[],
+            tokens: &[],
             meta: &[],
         };
         store.commit_block(&block, prepared).unwrap();
@@ -902,6 +912,70 @@ fn the_address_index_is_rebuilt_from_the_blocks_held() {
             .is_err()
     );
     assert_eq!(store.address_index_version().unwrap(), None);
+}
+
+#[test]
+fn tokens_are_indexed_by_holder() {
+    let (_dir, store) = open();
+    init(&store);
+    let (alice, bob) = (Address([1; 32]), Address([2; 32]));
+    let (t1, t2, t3) = (Address([7; 32]), Address([8; 32]), Address([9; 32]));
+    for (height, tokens) in [
+        (1u64, vec![(alice, t3), (bob, t3)]),
+        (2, vec![(alice, t1), (alice, t3)]),
+        (3, vec![(alice, t2)]),
+    ] {
+        let prepared = store.prepare(height, &WriteSet::new()).unwrap();
+        let bytes = format!("block{height}");
+        let block = CommittedBlock {
+            height,
+            state_root: prepared.root(),
+            bytes: bytes.as_bytes(),
+            tx_ids: &[],
+            addresses: &[],
+            receipts: &[],
+            tokens: &tokens,
+            meta: &[],
+        };
+        store.commit_block(&block, prepared).unwrap();
+    }
+    assert_eq!(
+        store.holder_tokens(&alice, None, 10).unwrap(),
+        [t1, t2, t3],
+        "once each"
+    );
+    assert_eq!(store.holder_tokens(&alice, None, 2).unwrap(), [t1, t2]);
+    assert_eq!(store.holder_tokens(&alice, Some(&t2), 10).unwrap(), [t3]);
+    assert_eq!(store.holder_tokens(&alice, Some(&t3), 10).unwrap(), []);
+    assert_eq!(
+        store.holder_tokens(&bob, None, 10).unwrap(),
+        [t3],
+        "nobody else's"
+    );
+    assert_eq!(
+        store.holder_tokens(&Address([3; 32]), None, 10).unwrap(),
+        []
+    );
+
+    assert_eq!(store.token_index_version().unwrap(), None);
+    let blocks = store
+        .rebuild_token_index(1, |h, _| Ok(if h == 2 { vec![(bob, t1)] } else { vec![] }))
+        .unwrap();
+    assert_eq!(blocks, 3);
+    assert_eq!(store.token_index_version().unwrap(), Some(1));
+    assert_eq!(store.holder_tokens(&alice, None, 10).unwrap(), []);
+    assert_eq!(store.holder_tokens(&bob, None, 10).unwrap(), [t1]);
+    assert_eq!(
+        store.address_index_version().unwrap(),
+        None,
+        "the other index is its own"
+    );
+    assert!(
+        store
+            .rebuild_token_index(2, |_, _| Err("bad".into()))
+            .is_err()
+    );
+    assert_eq!(store.token_index_version().unwrap(), None);
 }
 
 #[test]

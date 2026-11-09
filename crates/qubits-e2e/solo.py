@@ -62,6 +62,8 @@ def launched():
     return cli("contract", "view", f"{amm}.pool(native, {coin})", "--as", "u128s")[1].strip()
 check("a token made by the market, bought in the same call", launched() == f"{paid} {supply - bought} 0" and cli("contract", "view", f"{coin}.balance_of({keys['alice']})", "--as", "u128")[1].strip() == str(bought), launched())
 check("and the protocol paid at once", balance(keys["fees"]) == 10**6, str(balance(keys["fees"])))
+holdings = cli("account", "tokens", keys["alice"])[1]
+check("the buyer's tokens list the new one", f"{coin}  {bought} LNCH" in holdings and token in holdings, holdings)
 h0 = height()
 t0 = time.time()
 sender_groups = g['load_transactions'](0, 50, 40, keys["sink"])

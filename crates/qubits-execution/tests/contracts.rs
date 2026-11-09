@@ -6,8 +6,8 @@ mod common;
 use common::*;
 use qubits_crypto::{Domain, SecretKey};
 use qubits_execution::{
-    BlockError, Executor, TxError, execute_block, keys, read_contracts, recovery_reserve, simulate,
-    view,
+    BlockError, Executor, TxError, execute_block, keys, read_contracts, read_contracts_page,
+    recovery_reserve, simulate, view,
 };
 use qubits_state::StateReader;
 use qubits_types::limits::{GAS_PER_BYTE, MAX_BLOCK_GAS, MAX_CALL_DEPTH, MAX_TX_GAS};
@@ -461,6 +461,11 @@ fn the_chain_knows_every_contract_and_no_failed_one() {
     assert_eq!(receipt.outcome, Outcome::Trapped);
     let escrow = chain.deploy(ESCROW, vec![]);
     assert_eq!(read_contracts(&chain.state).unwrap(), [t, escrow]);
+    let page = |from, limit| read_contracts_page(&chain.state, from, limit).unwrap();
+    assert_eq!(page(0, Some(1)), (vec![t], 2));
+    assert_eq!(page(1, Some(5)), (vec![escrow], 2));
+    assert_eq!(page(1, None), (vec![escrow], 2));
+    assert_eq!(page(7, Some(5)), (vec![], 2));
 }
 
 /// Starts a contract from the code hash at the front of its input, sending the 16-byte amount

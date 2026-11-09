@@ -309,8 +309,18 @@ pub fn genesis_writes(genesis: &Genesis) -> WriteSet {
 /// Every contract, in the order made. It is in state, and not an index beside it, so a node that
 /// joined from a snapshot knows them too.
 pub fn read_contracts(state: &impl StateReader) -> Result<Vec<Address>, TxError> {
-    let count = counter(state.get(&keys::contracts())?)?;
-    (0..count)
+    Ok(read_contracts_page(state, 0, None)?.0)
+}
+
+/// The contracts from index `from` on, at most `limit` of them, and how many there are in all.
+pub fn read_contracts_page(
+    state: &impl StateReader,
+    from: u64,
+    limit: Option<u64>,
+) -> Result<(Vec<Address>, u64), TxError> {
+    let total = counter(state.get(&keys::contracts())?)?;
+    let end = limit.map_or(total, |limit| from.saturating_add(limit).min(total));
+    let contracts = (from.min(total)..end)
         .map(|index| {
             let bytes = state
                 .get(&keys::contract_at(index))?
@@ -320,7 +330,8 @@ pub fn read_contracts(state: &impl StateReader) -> Result<Vec<Address>, TxError>
                 .map_err(|_| TxError::Storage(format!("corrupt contract {index}")))?;
             Ok(Address(bytes))
         })
-        .collect()
+        .collect::<Result<_, TxError>>()?;
+    Ok((contracts, total))
 }
 
 pub(crate) fn counter(stored: Option<Vec<u8>>) -> Result<u64, TxError> {

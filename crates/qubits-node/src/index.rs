@@ -6,6 +6,8 @@ use crate::ChainBlock;
 /// The version of the rule in `addresses`. A node whose index was built with another one
 /// rebuilds it when it opens, so change this whenever the rule changes.
 pub const VERSION: u32 = 1;
+/// The same for `tokens`.
+pub const TOKEN_VERSION: u32 = 1;
 
 /// What a transaction is listed under at `/v1/accounts/{address}/transactions`: its sender, the
 /// addresses its payload names, and from its receipt the contract a deployment made, every
@@ -42,23 +44,67 @@ pub fn addresses(tx: &SignedTransaction, receipt: Option<&Receipt>) -> Vec<Addre
     named
 }
 
-/// The addresses of every transaction of a block, from what it says and the receipts the store
-/// kept for it.
-pub fn of_block(store: &Store, block: &ChainBlock) -> Result<Vec<Vec<Address>>, String> {
+/// Which holders a receipt's token events name, as `(holder, token)`: both sides of a
+/// `transfer` (from, to, amount) and the receiver of a `mint` (to, amount), as the standard
+/// token emits them. A supply credited at `init` has no event, so its owner is listed from its
+/// first transfer.
+pub fn tokens(receipt: &Receipt) -> Vec<(Address, Address)> {
+    let mut named = Vec::new();
+    for event in &receipt.events {
+        let holders: &[usize] = match (event.topic.as_slice(), event.data.len()) {
+            (b"transfer", 80) => &[0, 32],
+            (b"mint", 48) => &[0],
+            _ => continue,
+        };
+        for &at in holders {
+            let holder = Address(event.data[at..at + 32].try_into().expect("32 bytes"));
+            named.push((holder, event.contract));
+        }
+    }
+    named.sort();
+    named.dedup();
+    named
+}
+
+fn receipts(store: &Store, block: &ChainBlock) -> Result<Vec<Option<Receipt>>, String> {
     block
         .payload
         .transactions
         .iter()
-        .map(|tx| {
-            let receipt = match store.receipt(&tx.id()).map_err(|e| e.to_string())? {
-                Some(bytes) => {
-                    Some(borsh::from_slice::<Receipt>(&bytes).map_err(|e| e.to_string())?)
-                }
-                None => None,
-            };
-            Ok(addresses(tx, receipt.as_ref()))
-        })
+        .map(
+            |tx| match store.receipt(&tx.id()).map_err(|e| e.to_string())? {
+                Some(bytes) => Ok(Some(
+                    borsh::from_slice::<Receipt>(&bytes).map_err(|e| e.to_string())?,
+                )),
+                None => Ok(None),
+            },
+        )
         .collect()
+}
+
+/// The addresses of every transaction of a block, from what it says and the receipts the store
+/// kept for it.
+pub fn of_block(store: &Store, block: &ChainBlock) -> Result<Vec<Vec<Address>>, String> {
+    let receipts = receipts(store, block)?;
+    Ok(block
+        .payload
+        .transactions
+        .iter()
+        .zip(&receipts)
+        .map(|(tx, receipt)| addresses(tx, receipt.as_ref()))
+        .collect())
+}
+
+/// The token entries of a block, from the receipts the store kept for it.
+pub fn tokens_of_block(
+    store: &Store,
+    block: &ChainBlock,
+) -> Result<Vec<(Address, Address)>, String> {
+    Ok(receipts(store, block)?
+        .iter()
+        .flatten()
+        .flat_map(tokens)
+        .collect())
 }
 
 /// The addresses of a block's transactions from what they say alone: blocks put back from era
@@ -147,5 +193,41 @@ mod tests {
         let mut expected = vec![sender, token];
         expected.sort();
         assert_eq!(addresses(&deploy, Some(&made)), expected);
+    }
+
+    #[test]
+    fn holders_are_what_token_events_name() {
+        let (alice, bob, carol, token, market) = (
+            Address([1; 32]),
+            Address([2; 32]),
+            Address([3; 32]),
+            Address([8; 32]),
+            Address([9; 32]),
+        );
+        let event = |contract: Address, topic: &str, words: &[Address], amount: u128| Event {
+            contract,
+            topic: topic.as_bytes().to_vec(),
+            data: [
+                words.iter().flat_map(|a| a.0).collect::<Vec<u8>>(),
+                amount.to_le_bytes().to_vec(),
+            ]
+            .concat(),
+        };
+        let receipt = Receipt {
+            events: vec![
+                event(token, "transfer", &[alice, bob], 5),
+                event(token, "transfer", &[bob, alice], 1),
+                event(token, "mint", &[carol], 7),
+                event(token, "approve", &[alice, market], 9),
+                event(market, "swap", &[alice, bob, carol], 1),
+                event(market, "transfer", &[alice], 1),
+            ],
+            ..Receipt::default()
+        };
+        assert_eq!(
+            tokens(&receipt),
+            [(alice, token), (bob, token), (carol, token)],
+            "both sides of a transfer, a mint's receiver, once each, and nothing else"
+        );
     }
 }

@@ -846,7 +846,7 @@ fn a_contract_is_deployed_called_and_read() {
         "--arg",
         "\"Test Token\"",
         "--arg",
-        "\"TUSD\"",
+        "\"TEST\"",
         "--arg",
         "u64:6",
         "--out",
@@ -879,6 +879,11 @@ fn a_contract_is_deployed_called_and_read() {
         "1000"
     );
 
+    assert_eq!(
+        env.ok(&["account", "tokens", &alice]).trim(),
+        "no tokens",
+        "a supply given at init has no event"
+    );
     let out = env.ok(&[
         &[
             "contract",
@@ -895,6 +900,39 @@ fn a_contract_is_deployed_called_and_read() {
         "700"
     );
     assert_eq!(read(format!("{contract}.balance_of({bob})")).trim(), "300");
+    assert_eq!(
+        env.ok(&["account", "tokens", &bob]).trim(),
+        format!("{contract}  300 TEST")
+    );
+    assert_eq!(
+        env.ok(&["account", "tokens", &alice]).trim(),
+        format!("{contract}  700 TEST"),
+        "the sender is named too"
+    );
+    let page: qubits_types::rpc::AccountTokensResponse =
+        serde_json::from_str(&env.ok(&["account", "tokens", &bob, "--json"])).unwrap();
+    assert_eq!(page.tokens.len(), 1);
+    assert_eq!(page.tokens[0].to_string(), contract);
+    assert_eq!(page.next, None);
+
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .build()
+        .into();
+    let contracts = |query: &str| {
+        let mut resp = agent
+            .get(format!("{}/v1/contracts{query}", env.rpc))
+            .call()
+            .unwrap();
+        let code = resp.status().as_u16();
+        (code, resp.body_mut().read_to_string().unwrap())
+    };
+    let all: qubits_types::rpc::ContractsResponse = serde_json::from_str(&contracts("").1).unwrap();
+    assert_eq!((all.contracts.len(), all.total, all.next), (1, 1, None));
+    let past: qubits_types::rpc::ContractsResponse =
+        serde_json::from_str(&contracts("?from=1&limit=5").1).unwrap();
+    assert_eq!((past.contracts.len(), past.total, past.next), (0, 1, None));
+    assert_eq!(contracts("?limit=lots").0, 400);
 
     let stderr = env.err(
         &[
@@ -917,7 +955,7 @@ fn a_contract_is_deployed_called_and_read() {
         "--as",
         "text",
     ]);
-    assert_eq!(name.trim(), "TUSD");
+    assert_eq!(name.trim(), "TEST");
 
     let stderr = env.err(&["contract", "view", &format!("{alice}.balance_of({alice})")]);
     assert!(stderr.contains("no contract at that address"), "{stderr}");

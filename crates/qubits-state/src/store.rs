@@ -25,7 +25,9 @@ const CF_STALE_NODES: &str = "jmt_stale_nodes";
 const CF_STALE_VALUES: &str = "jmt_stale_values";
 /// address || height || index, empty values: which transactions name an address.
 const CF_ADDRESS_INDEX: &str = "address_index";
-const COLUMN_FAMILIES: [&str; 10] = [
+/// holder || token, empty values: which token contracts have named a holder.
+const CF_TOKEN_INDEX: &str = "token_index";
+const COLUMN_FAMILIES: [&str; 11] = [
     CF_NODES,
     CF_VALUES,
     CF_BLOCKS,
@@ -36,10 +38,12 @@ const COLUMN_FAMILIES: [&str; 10] = [
     CF_STALE_NODES,
     CF_STALE_VALUES,
     CF_ADDRESS_INDEX,
+    CF_TOKEN_INDEX,
 ];
 const META_PRUNED_BEFORE: &[u8] = b"pruned_before";
 const META_BLOCKS_FROM: &[u8] = b"blocks_from";
 const META_ADDRESS_INDEX: &[u8] = b"address_index";
+const META_TOKEN_INDEX: &[u8] = b"token_index";
 
 const META_GENESIS: &[u8] = b"genesis";
 const META_LATEST_HEIGHT: &[u8] = b"latest_height";
@@ -129,6 +133,8 @@ pub struct CommittedBlock<'a> {
     pub addresses: &'a [Vec<Address>],
     /// Only the transactions that have something to say: most are plain transfers.
     pub receipts: &'a [(Hash, Vec<u8>)],
+    /// `(holder, token)`: which token contracts named which holders in this block.
+    pub tokens: &'a [(Address, Address)],
     pub meta: &'a [(&'a [u8], Vec<u8>)],
 }
 
@@ -273,6 +279,13 @@ fn address_key(address: &Address, at: TxLocation) -> [u8; 44] {
     out[..32].copy_from_slice(&address.0);
     out[32..40].copy_from_slice(&at.height.to_be_bytes());
     out[40..].copy_from_slice(&at.index.to_be_bytes());
+    out
+}
+
+fn token_key(holder: &Address, token: &Address) -> [u8; 64] {
+    let mut out = [0u8; 64];
+    out[..32].copy_from_slice(&holder.0);
+    out[32..].copy_from_slice(&token.0);
     out
 }
 
@@ -470,6 +483,9 @@ impl Store {
         }
         for (id, receipt) in block.receipts {
             batch.put_cf(self.cf(CF_RECEIPTS), id.0, receipt);
+        }
+        for (holder, token) in block.tokens {
+            batch.put_cf(self.cf(CF_TOKEN_INDEX), token_key(holder, token), []);
         }
         for (key, value) in block.meta {
             batch.put_cf(self.cf(CF_META), meta_key(key), value);
@@ -1037,21 +1053,89 @@ impl Store {
         Ok(found)
     }
 
-    /// The version of the rule the address index was built with, if it was built.
-    pub fn address_index_version(&self) -> Result<Option<u32>, Error> {
-        match self
-            .db
-            .get_cf(self.cf(CF_META), META_ADDRESS_INDEX)
-            .map_err(err)?
-        {
+    /// The tokens that have named `holder`, in address order, from just after `after` on.
+    pub fn holder_tokens(
+        &self,
+        holder: &Address,
+        after: Option<&Address>,
+        limit: usize,
+    ) -> Result<Vec<Address>, Error> {
+        let start = token_key(holder, after.unwrap_or(&Address([0; 32])));
+        let mut found = Vec::new();
+        for item in self.db.iterator_cf(
+            self.cf(CF_TOKEN_INDEX),
+            IteratorMode::From(&start, Direction::Forward),
+        ) {
+            if found.len() >= limit {
+                break;
+            }
+            let (key, _) = item.map_err(err)?;
+            if key.len() != 64 || key[..32] != holder.0 {
+                break;
+            }
+            if after.is_some() && key.as_ref() == start.as_slice() {
+                continue;
+            }
+            found.push(Address(key[32..].try_into().expect("32 bytes")));
+        }
+        Ok(found)
+    }
+
+    fn index_version(&self, meta: &[u8]) -> Result<Option<u32>, Error> {
+        match self.db.get_cf(self.cf(CF_META), meta).map_err(err)? {
             Some(bytes) => Ok(Some(u32::from_be_bytes(
                 bytes
                     .as_slice()
                     .try_into()
-                    .map_err(|_| err("corrupt address index version"))?,
+                    .map_err(|_| err("corrupt index version"))?,
             ))),
             None => Ok(None),
         }
+    }
+
+    /// The version of the rule the address index was built with, if it was built.
+    pub fn address_index_version(&self) -> Result<Option<u32>, Error> {
+        self.index_version(META_ADDRESS_INDEX)
+    }
+
+    /// The version of the rule the token index was built with, if it was built.
+    pub fn token_index_version(&self) -> Result<Option<u32>, Error> {
+        self.index_version(META_TOKEN_INDEX)
+    }
+
+    /// Throws an index away and builds it again from every block held, `keys` giving a block's
+    /// entries. Nothing else may write meanwhile. Returns how many blocks it read.
+    fn rebuild_index(
+        &self,
+        cf: &str,
+        meta: &[u8],
+        version: u32,
+        mut keys: impl FnMut(u64, &[u8]) -> Result<Vec<Vec<u8>>, String>,
+    ) -> Result<u64, Error> {
+        const BATCH: usize = 10_000;
+        let mut batch = WriteBatch::default();
+        batch.delete_range_cf(self.cf(cf), [].as_slice(), [0xff; 65].as_slice());
+        batch.delete_cf(self.cf(CF_META), meta);
+        self.write(std::mem::take(&mut batch))?;
+        let mut blocks = 0;
+        for item in self.db.iterator_cf(self.cf(CF_BLOCKS), IteratorMode::Start) {
+            let (key, bytes) = item.map_err(err)?;
+            let height = u64::from_be_bytes(
+                key.as_ref()
+                    .try_into()
+                    .map_err(|_| err("corrupt block key"))?,
+            );
+            for key in keys(height, &bytes).map_err(err)? {
+                batch.put_cf(self.cf(cf), key, []);
+            }
+            if batch.len() >= BATCH {
+                self.write(std::mem::take(&mut batch))?;
+            }
+            blocks += 1;
+        }
+        batch.put_cf(self.cf(CF_META), meta, version.to_be_bytes());
+        self.write(batch)?;
+        Ok(blocks)
     }
 
     /// Throws the address index away and builds it again from every block held, `addresses`
@@ -1062,35 +1146,36 @@ impl Store {
         version: u32,
         mut addresses: impl FnMut(u64, &[u8]) -> Result<Vec<Vec<Address>>, String>,
     ) -> Result<u64, Error> {
-        const BATCH: usize = 10_000;
-        let mut batch = WriteBatch::default();
-        batch.delete_range_cf(
-            self.cf(CF_ADDRESS_INDEX),
-            [].as_slice(),
-            [0xff; 45].as_slice(),
-        );
-        batch.delete_cf(self.cf(CF_META), META_ADDRESS_INDEX);
-        self.write(std::mem::take(&mut batch))?;
-        let mut blocks = 0;
-        for item in self.db.iterator_cf(self.cf(CF_BLOCKS), IteratorMode::Start) {
-            let (key, bytes) = item.map_err(err)?;
-            let height = u64::from_be_bytes(
-                key.as_ref()
-                    .try_into()
-                    .map_err(|_| err("corrupt block key"))?,
-            );
-            let named = addresses(height, &bytes).map_err(err)?;
-            for key in address_keys(height, &named) {
-                batch.put_cf(self.cf(CF_ADDRESS_INDEX), key, []);
-            }
-            if batch.len() >= BATCH {
-                self.write(std::mem::take(&mut batch))?;
-            }
-            blocks += 1;
-        }
-        batch.put_cf(self.cf(CF_META), META_ADDRESS_INDEX, version.to_be_bytes());
-        self.write(batch)?;
-        Ok(blocks)
+        self.rebuild_index(
+            CF_ADDRESS_INDEX,
+            META_ADDRESS_INDEX,
+            version,
+            |height, bytes| {
+                let named = addresses(height, bytes)?;
+                Ok(address_keys(height, &named).map(|k| k.to_vec()).collect())
+            },
+        )
+    }
+
+    /// The same for the token index, from what the receipts of each block held say. Blocks
+    /// without receipts, from a snapshot or era files, add nothing.
+    pub fn rebuild_token_index(
+        &self,
+        version: u32,
+        mut tokens: impl FnMut(u64, &[u8]) -> Result<Vec<(Address, Address)>, String>,
+    ) -> Result<u64, Error> {
+        self.rebuild_index(
+            CF_TOKEN_INDEX,
+            META_TOKEN_INDEX,
+            version,
+            |height, bytes| {
+                let named = tokens(height, bytes)?;
+                Ok(named
+                    .iter()
+                    .map(|(h, t)| token_key(h, t).to_vec())
+                    .collect())
+            },
+        )
     }
 }
 

@@ -3,6 +3,7 @@
 mod chain;
 mod contract;
 mod history;
+mod tokens;
 mod watch;
 
 use std::fs::{self, OpenOptions};
@@ -126,6 +127,20 @@ enum AccountCommand {
         /// Go on from the cursor an earlier page ended with.
         #[arg(long)]
         before: Option<String>,
+        /// Print the node's answer as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// The tokens that have named an address in a transfer, with what it holds of each.
+    Tokens {
+        /// Address (`qb1…`).
+        address: Address,
+        /// How many to show, at most 1000.
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+        /// Go on after the token an earlier page ended with.
+        #[arg(long)]
+        after: Option<Address>,
         /// Print the node's answer as JSON.
         #[arg(long)]
         json: bool,
@@ -689,6 +704,23 @@ fn run(cli: Cli) -> Result<()> {
                 print_json(&page)?;
             } else {
                 history::print(&address, &page);
+            }
+        }
+        Command::Account {
+            command:
+                Some(AccountCommand::Tokens {
+                    address,
+                    limit,
+                    after,
+                    json,
+                }),
+            ..
+        } => {
+            let page = client.account_tokens(&address, limit, after.as_ref())?;
+            if json {
+                print_json(&page)?;
+            } else {
+                tokens::print(&client, &address, &page);
             }
         }
         Command::Account {
